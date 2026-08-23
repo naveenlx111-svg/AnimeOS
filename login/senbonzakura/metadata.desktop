@@ -1,0 +1,12 @@
+[SddmGreeterTheme]
+Name=AnimeOS - Senbonzakura
+Description=AnimeOS Senbonzakura login theme
+Author=AnimeOS
+License=MIT
+Type=sddm-theme
+Version=0.1
+MainScript=Main.qml
+ConfigFile=theme.conf
+Theme-Id=animeos-senbonzakura
+Theme-API=2.0
+QtVersion=6
