@@ -64,10 +64,10 @@ def srgb(hexstr):
     return tuple(lin(int(h[i:i + 2], 16)) for i in (0, 2, 4)) + (1.0,)
 
 
-C_PETAL_FILL = srgb('#FFC2D6')
-C_PETAL_HILT = srgb('#FFE8F1')
-C_PETAL_GLOW = srgb('#FF8DB8')
-C_PETAL_DEEP = srgb('#F273AC')   # saturated core so lit petals stay pink
+C_PETAL_FILL = srgb('#FF9FC5')
+C_PETAL_HILT = srgb('#FFEAF4')
+C_PETAL_GLOW = srgb('#FF4F9F')
+C_PETAL_DEEP = srgb('#D82D7F')   # saturated core so lit petals stay pink
 C_BLADE_BODY = srgb('#B9C9DC')
 C_BLADE_GLOW = srgb('#DCEBFF')
 
@@ -155,12 +155,12 @@ def build_petal_mesh():
         else:
             k = (t - 0.58) / 0.42
             w = 0.27 * (1.0 - 0.42 * k ** 1.8)
-        notch = max(0.0, (t - 0.82) / 0.18) ** 1.2
+        notch = max(0.0, (t - 0.78) / 0.22) ** 1.15
         row = []
         for j in range(cols):
             u = j / (cols - 1) * 2.0 - 1.0
             x = u * w + 0.022 * math.sin(t * 3.1)          # gentle asymmetry
-            y = t - 0.10 * notch * (1.0 - abs(u)) ** 1.6   # the tip notch
+            y = t - 0.18 * notch * (1.0 - abs(u)) ** 1.45   # the tip notch
             z = 0.075 * (1.0 - u * u) * math.sin(math.pi * t) ** 0.8 \
                 + 0.030 * (t - 0.5)                         # cup + lengthwise curl
             row.append(len(verts))
@@ -308,41 +308,42 @@ def build_swords_mesh(swords):
 # ============================================================================
 
 def layout_swords():
-    """Three depth rows fanning open behind the anchor, as in the Bankai shot:
-    blades near screen centre stay vertical, outer blades splay outward."""
-    rng = random.Random(20260825)
-    rows = [
-        # (z depth, count, ndc half-spread, length range, width range)
-        (-11.0, 13, 1.34, (14.0, 19.0), (1.5, 2.2)),
-        (-5.5, 9, 1.16, (11.5, 15.5), (1.2, 1.8)),
-        (-1.5, 6, 1.00, (9.0, 12.5), (1.0, 1.4)),
-    ]
+    """Authoritative 24-blade mirrored fan from ``Swords_rising``.
+
+    The reference is a nested, symmetric formation: the center pair is short,
+    the blades get progressively longer toward the outside, and every blade
+    shares the same ground line.  Keep the table deterministic so the VFX can
+    be registered against the Byakuya plate in Resolve.
+    """
+    # NDC x positions measured from the final reference plate.  The center gap
+    # is intentional: Byakuya remains visible between the two inner blades.
+    x_abs = (0.14, 0.22, 0.31, 0.41, 0.52, 0.64,
+             0.78, 0.93, 1.09, 1.25, 1.40, 1.53)
+    lengths = (9.2, 10.0, 10.8, 11.8, 12.9, 14.0,
+               15.1, 16.2, 17.2, 18.1, 18.9, 19.5)
+    widths = (1.02, 1.06, 1.10, 1.14, 1.18, 1.22,
+              1.27, 1.32, 1.38, 1.44, 1.50, 1.56)
     swords = []
-    for ri, (z, count, spread, lrange, wrange) in enumerate(rows):
-        for i in range(count):
-            nx = -spread + (2 * spread) * (i / max(1, count - 1))
-            nx += rng.uniform(-0.05, 0.05)
-            # Keep the blade line clear of the exact anchor column so the swarm
-            # reads as emerging *around* the character, not through them.
-            if abs(nx - ANCHOR_NDC[0]) < 0.10:
-                nx += 0.14 * (1 if nx >= ANCHOR_NDC[0] else -1)
-            root = ndc_to_world(nx, -1.30 - rng.uniform(0.0, 0.12), z)
-            # Outer blades lean outward -> the signature fan.
-            lean = -nx * 0.52 + rng.uniform(-0.07, 0.07)
-            tilt = rng.uniform(-0.16, 0.16)
+    for side in (-1, 1):
+        for i, (ax, length, width) in enumerate(zip(x_abs, lengths, widths)):
+            nx = ANCHOR_NDC[0] + side * ax
+            # Outer swords sit slightly farther back, producing the same
+            # perspective compression as the reference without random rows.
+            z = -2.6 - 0.48 * i
+            root = ndc_to_world(nx, -1.28, z)
+            lean = -side * (0.08 + 0.060 * i)
             swords.append({
                 'root': tuple(root),
-                'rot': (tilt, rng.uniform(-0.5, 0.5), lean),
-                'len': rng.uniform(*lrange),
-                'wid': rng.uniform(*wrange),
+                'rot': (0.0, 0.0, lean),
+                'len': length,
+                'wid': width,
                 'z': z,
-                # Emergence finishes by frame 10; erosion starts after that, so
-                # blades are static while they shed petals (birth points stay put).
-                'delay': abs(nx) * 1.9 + rng.uniform(0.0, 0.5),
-                'edur': rng.uniform(5.5, 7.0),
-                'dt0': 10.0 + abs(nx) * 1.6 + rng.uniform(0.0, 1.2),
-                'ddur': rng.uniform(6.0, 8.0),
-                'row': ri,
+                'delay': 1.2 + i * 0.48,
+                'edur': 5.6,
+                'dt0': 10.4 + i * 0.34,
+                'ddur': 7.2,
+                'row': 0,
+                'index': side * (i + 1),
             })
     return swords
 
@@ -393,7 +394,10 @@ def bake_petal_layer(name, swords, count, spec, seed):
         # Synced to the erosion front travelling tip -> root.
         tb = sw['dt0'] + (1.0 - t) * sw['ddur'] + rng.uniform(0.0, 0.8)
 
-        dest = spec['dest'](rng, sw, i, count)
+        if spec.get('dest_accepts_t'):
+            dest = spec['dest'](rng, sw, i, count, t, birth)
+        else:
+            dest = spec['dest'](rng, sw, i, count)
         nx, ny, z_end, arrive, size = dest
         e = ndc_to_world(nx, ny, z_end)
 
@@ -404,6 +408,16 @@ def bake_petal_layer(name, swords, count, spec, seed):
             birth.y + (e.y - birth.y) * (bias[1] + rng.uniform(-0.08, 0.08)),
             birth.z + (e.z - birth.z) * (bias[2] + rng.uniform(-0.08, 0.08)),
         ))
+        if spec.get('swirl'):
+            # Add a tangent component so the bezier bends around the invisible
+            # Byakuya anchor instead of reading as a straight particle stream.
+            center = ndc_to_world(ANCHOR_NDC[0], ANCHOR_NDC[1], birth.z)
+            radial = birth - center
+            radial.z = 0.0
+            if radial.length < 1e-4:
+                radial = Vector((1.0, 0.0, 0.0))
+            tangent = Vector((-radial.y, radial.x, 0.0)).normalized()
+            c += tangent * spec['swirl'](rng) * (0.65 + 0.35 * rng.random())
 
         # By default a petal keeps going the way it arrived. Layers that would
         # otherwise keep barrelling into the lens (and stay huge on screen)
@@ -481,15 +495,18 @@ def bake_petal_layer(name, swords, count, spec, seed):
 
 def spec_far():
     def dest(rng, sw, i, count):
-        nx = rng.uniform(1.20, 2.40)
-        ny = rng.uniform(0.55, 1.90)
-        z = rng.uniform(-13.0, -2.0)
-        arrive = rng.uniform(40.0, 56.0)
-        size = rng.uniform(0.14, 0.40)
+        theta = (i / max(1, count)) * math.tau * 2.15 + rng.uniform(-0.12, 0.12)
+        radius = rng.uniform(0.38, 1.18)
+        nx = ANCHOR_NDC[0] + math.cos(theta) * radius * 1.12
+        ny = ANCHOR_NDC[1] + math.sin(theta) * radius * 0.74
+        z = rng.uniform(-13.0, -3.0)
+        arrive = rng.uniform(27.0, 45.0)
+        size = rng.uniform(0.12, 0.30)
         return nx, ny, z, arrive, size
     return {
         'dest': dest,
-        'ctrl_bias': (0.62, 0.20, 0.50),   # go right first, curve up later
+        'ctrl_bias': (0.44, 0.36, 0.50),
+        'swirl': lambda r: r.uniform(1.0, 2.2),
         'exit_speed': lambda r: r.uniform(0.30, 0.60),
         'start_scale': lambda r: r.uniform(0.45, 0.75),
         'grow': lambda r: 0.0,
@@ -501,15 +518,18 @@ def spec_far():
 
 def spec_mid():
     def dest(rng, sw, i, count):
-        nx = rng.uniform(1.10, 2.10)
-        ny = rng.uniform(0.45, 1.70)
-        z = rng.uniform(-1.0, 8.5)
-        arrive = rng.uniform(36.0, 54.0)
-        size = rng.uniform(0.30, 0.88)
+        theta = (i / max(1, count)) * math.tau * 2.7 + rng.uniform(-0.16, 0.16)
+        radius = rng.uniform(0.20, 1.02)
+        nx = ANCHOR_NDC[0] + math.cos(theta) * radius * 1.20
+        ny = ANCHOR_NDC[1] + math.sin(theta) * radius * 0.82
+        z = rng.uniform(-2.0, 8.0)
+        arrive = rng.uniform(31.0, 50.0)
+        size = rng.uniform(0.24, 0.66)
         return nx, ny, z, arrive, size
     return {
         'dest': dest,
-        'ctrl_bias': (0.58, 0.22, 0.42),
+        'ctrl_bias': (0.42, 0.34, 0.42),
+        'swirl': lambda r: r.uniform(0.8, 1.8),
         'exit_speed': lambda r: r.uniform(0.45, 0.85),
         'start_scale': lambda r: r.uniform(0.40, 0.70),
         'grow': lambda r: r.uniform(0.0, 0.02),
@@ -548,12 +568,12 @@ def spec_near(waves, grid_x, grid_y):
         # it becomes a featureless wall -- coverage has to come from the number
         # of overlapping petals, so you still read petal silhouettes.
         world_cell = max(cw * half_w(z), ch * half_h(z))
-        size = world_cell * rng.uniform(1.65, 2.35)
+        size = world_cell * rng.uniform(1.08, 1.55)
         return nx, ny, z, arrive, size
     return {
         'dest': dest,
         # Hold back, drift right/up, then swing hard toward the lens.
-        'ctrl_bias': (0.60, 0.34, 0.16),
+        'ctrl_bias': (0.48, 0.42, 0.10),
         'exit_dir': (0.82, 0.50, 0.20),   # sweep off right/up, not into the lens
         'exit_speed': lambda r: r.uniform(1.30, 1.95),
         # All four waves dwell until ~60 so coverage accumulates and holds
@@ -585,6 +605,41 @@ def spec_crossers():
         'ease': lambda r: r.uniform(2.2, 3.0),
         'wobble': lambda r: r.uniform(0.02, 0.08),
         'spin': lambda r: r.uniform(0.04, 0.12),
+    }
+
+
+def spec_sword_fragments():
+    """Fragments born on the erosion front and briefly orbiting their source.
+
+    This layer is deliberately separate from the long-range swarm: it makes
+    the causal handoff legible in the first few frames of each sword's breakup.
+    """
+    def dest(rng, sw, i, count, t, birth):
+        rot = Euler(sw['rot'], 'XYZ').to_matrix()
+        axis = (rot @ Vector((0.0, 1.0, 0.0))).normalized()
+        side = rot @ Vector((1.0, 0.0, 0.0))
+        # Spread from the newly exposed surface, with the tip shedding first.
+        lift = (0.25 + 0.55 * t) * sw['len']
+        p = birth + axis * rng.uniform(0.20, 0.85) + side * rng.uniform(-0.55, 0.55)
+        p += Vector((rng.uniform(-0.12, 0.12), rng.uniform(-0.12, 0.12),
+                     rng.uniform(-0.08, 0.14)))
+        nx = max(-1.35, min(1.35, p.x / half_w(-3.0)))
+        ny = max(-1.25, min(1.25, p.y / half_h(-3.0)))
+        z = rng.uniform(-1.5, 4.5)
+        arrive = rng.uniform(22.0, 34.0) + (1.0 - t) * 4.0
+        size = rng.uniform(0.10, 0.24) * (0.8 + 0.5 * t)
+        return nx, ny, z, arrive, size
+    return {
+        'dest': dest,
+        'dest_accepts_t': True,
+        'ctrl_bias': (0.28, 0.35, 0.35),
+        'swirl': lambda r: r.uniform(0.25, 0.65),
+        'exit_speed': lambda r: r.uniform(0.24, 0.46),
+        'start_scale': lambda r: r.uniform(0.18, 0.36),
+        'grow': lambda r: r.uniform(0.0, 0.02),
+        'ease': lambda r: r.uniform(1.3, 1.8),
+        'wobble': lambda r: r.uniform(0.03, 0.10),
+        'spin': lambda r: r.uniform(0.10, 0.28),
     }
 
 
@@ -885,28 +940,29 @@ def make_petal_material():
     nt.links.new(mix2.outputs[2], bsdf.inputs['Base Color'])
 
     # Soft luminous rim, as on the reference sheet -- low radius, never hides
-    # the silhouette.
+    # the silhouette. Keep the body opaque enough that the split tip remains
+    # readable after Resolve adds its own glow.
     rim = nt.nodes.new('ShaderNodeMath'); rim.operation = 'POWER'
     rim.inputs[1].default_value = 3.0; rim.location = (-420, -380)
     nt.links.new(a_s.outputs['Fac'], rim.inputs[0])
     rim2 = nt.nodes.new('ShaderNodeMath'); rim2.operation = 'MULTIPLY_ADD'
-    rim2.inputs[1].default_value = 0.80
-    rim2.inputs[2].default_value = 0.24
+    rim2.inputs[1].default_value = 0.42
+    rim2.inputs[2].default_value = 0.08
     rim2.location = (-240, -380)
     nt.links.new(rim.outputs[0], rim2.inputs[0])
     nt.links.new(rim2.outputs[0], bsdf.inputs['Emission Strength'])
     bsdf.inputs['Emission Color'].default_value = C_PETAL_GLOW
 
     bsdf.inputs['Metallic'].default_value = 0.0
-    bsdf.inputs['Roughness'].default_value = 0.42
-    bsdf.inputs['Sheen Weight'].default_value = 0.45
+    bsdf.inputs['Roughness'].default_value = 0.34
+    bsdf.inputs['Sheen Weight'].default_value = 0.22
     bsdf.inputs['Sheen Roughness'].default_value = 0.30
     bsdf.inputs['Sheen Tint'].default_value = C_PETAL_HILT
     if 'Thin Wall' in bsdf.inputs:
         bsdf.inputs['Thin Wall'].default_value = True
-    bsdf.inputs['Subsurface Weight'].default_value = 0.22
+    bsdf.inputs['Subsurface Weight'].default_value = 0.06
     bsdf.inputs['Subsurface Radius'].default_value = (0.9, 0.42, 0.55)
-    bsdf.inputs['Subsurface Scale'].default_value = 0.05
+    bsdf.inputs['Subsurface Scale'].default_value = 0.02
     return mat
 
 
@@ -973,7 +1029,7 @@ def make_veil_material():
     tr = nt.nodes.new('ShaderNodeBsdfTransparent'); tr.location = (200, 120)
     em = nt.nodes.new('ShaderNodeEmission'); em.location = (200, -80)
     em.inputs['Color'].default_value = C_PETAL_GLOW
-    em.inputs['Strength'].default_value = 1.15
+    em.inputs['Strength'].default_value = 0.42
     nt.links.new(tr.outputs[0], mix.inputs[1])
     nt.links.new(em.outputs[0], mix.inputs[2])
     nt.links.new(mix.outputs[0], out.inputs['Surface'])
@@ -1003,9 +1059,10 @@ def make_veil_material():
     nt.links.new(mr.outputs['Result'], fac.inputs[1])
     nt.links.new(fac.outputs[0], mix.inputs['Fac'])
 
-    # The engulfment window. Peaks exactly on the storyboard's cut point.
-    for frame, value in ((49, 0.0), (52, 0.26), (55, 0.50),
-                         (60, 0.55), (63, 0.18), (65, 0.0)):
+    # A restrained atmospheric lift behind the actual petals. It supports the
+    # transition without replacing the petal silhouettes with a pink card.
+    for frame, value in ((49, 0.0), (53, 0.06), (56, 0.10),
+                         (60, 0.12), (63, 0.04), (65, 0.0)):
         amount.outputs[0].default_value = value
         amount.outputs[0].keyframe_insert('default_value', frame=frame)
     return mat
@@ -1099,7 +1156,7 @@ def make_readme(counts):
     w('No Byakuya, no login UI, no environment. Composite underneath in Resolve.\n\n')
     w('TIMELINE (24 fps, frames 1-68)\n')
     w('   1-10  blades emerge from below frame and fan open\n')
-    w('  10-20  blades erode tip->root; petals are born on the surface the\n')
+    w('  10-20  blades erode tip->root; fragments are born on the exact surface\n')
     w('         erosion front just uncovered\n')
     w('  20-30  coherent left->right + upward flow\n')
     w('  30-40  swarm spreads in depth, near petals begin growing\n')
@@ -1114,6 +1171,7 @@ def make_readme(counts):
     w('  that is the safest single frame to cut on. 53-60 are all >=99%.\n\n')
     w('OBJECTS\n')
     w('  Senbonzakura_Swords   all blades in one mesh + the emerge/erode nodes\n')
+    w('  Petals_SWORD_FRAGMENTS short-range breakup fragments born on blade faces\n')
     w('  Petals_FAR / MID      the flowing background and midground swarm\n')
     w('  Petals_NEAR_WAVE      the foreground petals that engulf the frame\n')
     w('  Petals_CROSSERS       fragments that punch past the camera plane\n')
@@ -1173,14 +1231,17 @@ def main():
     # --- petals ---
     petal_ng = make_petal_nodes('GN_Senbonzakura_Petals', petal_src)
     layers = [
-        ('Petals_FAR', 900, spec_far(), 101),
-        ('Petals_MID', 620, spec_mid(), 202),
+        # This is the visible causal bridge: small fragments are born directly
+        # on the eroding blades and remain near them before joining the orbit.
+        ('Petals_SWORD_FRAGMENTS', 520, spec_sword_fragments(), 111),
+        ('Petals_FAR', 760, spec_far(), 101),
+        ('Petals_MID', 540, spec_mid(), 202),
         # Four staggered depths so coverage builds through 46-52, holds solid
         # through 53-60, then unloads. Grid is 10x7 per wave.
-        ('Petals_NEAR_WAVE', 420, spec_near(
+        ('Petals_NEAR_WAVE', 360, spec_near(
             [(9.5, 47.5, 51.5), (11.5, 50.0, 54.0),
              (13.0, 52.5, 56.5), (14.2, 55.0, 59.5)], 10, 7), 303),
-        ('Petals_CROSSERS', 80, spec_crossers(), 404),
+        ('Petals_CROSSERS', 64, spec_crossers(), 404),
     ]
     counts = []
     for name, count, spec, seed in layers:
