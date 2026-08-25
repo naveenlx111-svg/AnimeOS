@@ -1,0 +1,7 @@
+# Blender autosave / backup files
+*.blend1
+*.blend2
+*.blend.bak
+
+# Render output
+Initial_render/renders/

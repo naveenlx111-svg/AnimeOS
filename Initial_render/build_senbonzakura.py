@@ -1,425 +1,1232 @@
+"""
+SENBONZAKURA BANKAI -- VFX-only layer builder
+=============================================
+
+Builds `senbonzakura_prototype.blend`: a transparent RGBA element containing
+ONLY the Senbonzakura swords + petals. No character, no UI, no environment.
+Byakuya, the KDE footage and everything else are composited under this render
+in DaVinci Resolve.
+
+Run:  blender -b senbonzakura_prototype.blend --python build_senbonzakura.py
+
+Storyboard beats (24 fps):
+     1-10   giant blades stab up out of the ground and fan open
+    10-20   the blades erode tip-to-root; every petal is born on the surface
+            the erosion front just passed, so fragments really come off the swords
+    20-30   coherent left -> right + upward flow
+    30-40   the swarm spreads in depth, near petals start growing
+    40-50   the near wave rushes the camera
+    50-60   near petals + haze cover the whole frame  <- the cut point
+    60-65   everything exits right/up and off the camera plane; layer goes empty
+
+Design notes
+------------
+Every petal's path is BAKED here in Python as a quadratic bezier with a
+frame-accurate destination computed in camera NDC (see `ndc_to_world`). The
+geometry nodes tree only *evaluates* that bezier against the scene frame. That
+is what makes the flow directional and repeatable instead of a generic burst --
+and it stays editable: re-run this script with different numbers, or grab the
+`*_POINTS` meshes and edit the baked attributes.
+"""
+
 import bpy
 import math
 import random
-from mathutils import Vector
-
+from mathutils import Euler, Vector
 
 ROOT = bpy.path.abspath('//')
 OUT_FILE = ROOT + 'senbonzakura_prototype.blend'
 
+# ----------------------------------------------------------------------------
+# Camera / framing constants. Everything else is derived from these, so changing
+# the lens or resolution keeps the storyboard beats framed correctly.
+# ----------------------------------------------------------------------------
+RES_X, RES_Y = 1920, 1080
+CAM_Z = 20.0            # camera sits at +Z looking down -Z
+LENS = 50.0
+SENSOR = 36.0
+ASPECT = RES_Y / RES_X
 
-def clear_collection_objects(collection):
-    for obj in list(collection.objects):
-        bpy.data.objects.remove(obj, do_unlink=True)
+FRAME_START, FRAME_END = 1, 68
+
+# Invisible composition anchor: where Byakuya will sit in the Resolve comp.
+# Nothing is rendered here -- it only biases where blades are NOT placed and
+# which region the swarm has to travel through.
+ANCHOR_NDC = (-0.05, -0.15)
+
+# Palette from the petal reference sheet. Blender shader inputs are LINEAR, so
+# the sRGB hex values have to be converted or the petals come out chalky white.
+def srgb(hexstr):
+    def lin(c):
+        c /= 255.0
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+    h = hexstr.lstrip('#')
+    return tuple(lin(int(h[i:i + 2], 16)) for i in (0, 2, 4)) + (1.0,)
 
 
-def get_or_create_collection(name, parent=None):
+C_PETAL_FILL = srgb('#FFC2D6')
+C_PETAL_HILT = srgb('#FFE8F1')
+C_PETAL_GLOW = srgb('#FF8DB8')
+C_PETAL_DEEP = srgb('#F273AC')   # saturated core so lit petals stay pink
+C_BLADE_BODY = srgb('#B9C9DC')
+C_BLADE_GLOW = srgb('#DCEBFF')
+
+
+def half_w(z):
+    """Half-width of the camera frustum, in world units, at depth `z`."""
+    return (CAM_Z - z) * (SENSOR * 0.5) / LENS
+
+
+def half_h(z):
+    return half_w(z) * ASPECT
+
+
+def ndc_to_world(nx, ny, z):
+    """Screen-space (-1..1 = frame edges) -> world. The key to frame-accuracy."""
+    return Vector((nx * half_w(z), ny * half_h(z), z))
+
+
+# ============================================================================
+# Scene cleanup
+# ============================================================================
+
+LEGACY_OBJECTS = (
+    'Senbonzakura_FAR_POINTS', 'Senbonzakura_MID_POINTS',
+    'Senbonzakura_FOREGROUND_POINTS', 'Senbonzakura_Fragment_SOURCE',
+    'Preview_Backdrop_DARK', 'Plane_BeginnerPrototype_REFERENCE',
+)
+LEGACY_COLLECTIONS = (
+    'PARTICLES_GeometryNodes', 'SOURCE_Fragment', 'PREVIEW_Optional',
+    'REFERENCE_Original_Prototype',
+)
+BUILT_COLLECTIONS = ('SOURCE_Geometry', 'SWORDS', 'PETALS', 'FX_Optional', 'RIG')
+
+
+def wipe_previous_build():
+    for name in LEGACY_OBJECTS:
+        obj = bpy.data.objects.get(name)
+        if obj:
+            bpy.data.objects.remove(obj, do_unlink=True)
+    for name in BUILT_COLLECTIONS:
+        col = bpy.data.collections.get(name)
+        if col:
+            for obj in list(col.objects):
+                bpy.data.objects.remove(obj, do_unlink=True)
+    for name in LEGACY_COLLECTIONS + BUILT_COLLECTIONS:
+        col = bpy.data.collections.get(name)
+        if col:
+            bpy.data.collections.remove(col)
+    for ng in list(bpy.data.node_groups):
+        if ng.name.startswith('Senbonzakura') or ng.name.startswith('GN_'):
+            bpy.data.node_groups.remove(ng, do_unlink=True)
+    for block in (bpy.data.meshes, bpy.data.materials):
+        for item in list(block):
+            if item.users == 0:
+                block.remove(item)
+
+
+def collection(name):
     col = bpy.data.collections.get(name)
     if col is None:
         col = bpy.data.collections.new(name)
-        (parent or bpy.context.scene.collection).children.link(col)
+        bpy.context.scene.collection.children.link(col)
     return col
 
 
-def link_only(obj, collection):
-    for c in list(obj.users_collection):
-        c.objects.unlink(obj)
-    collection.objects.link(obj)
+# ============================================================================
+# Source meshes
+# ============================================================================
 
+def build_petal_mesh():
+    """One sakura petal, matching the reference sheet: thin, softly cupped,
+    slightly asymmetric, with the characteristic notch splitting the tip."""
+    # Dense enough that a petal filling a third of the frame still reads as a
+    # smooth curved surface rather than a faceted card.
+    rows, cols = 21, 13
+    verts, grid = [], []
+    attr_t, attr_s = [], []
 
-def make_material():
-    mat = bpy.data.materials.get('MAT_SakuraBlade_Pearl') or bpy.data.materials.new('MAT_SakuraBlade_Pearl')
-    mat.use_nodes = True
-    nodes = mat.node_tree.nodes
-    bsdf = nodes.get('Principled BSDF')
-    bsdf.inputs['Base Color'].default_value = (0.98, 0.32, 0.60, 1.0)
-    bsdf.inputs['Metallic'].default_value = 0.18
-    bsdf.inputs['Roughness'].default_value = 0.26
-    if 'Coat Weight' in bsdf.inputs:
-        bsdf.inputs['Coat Weight'].default_value = 0.30
-    if 'Coat Roughness' in bsdf.inputs:
-        bsdf.inputs['Coat Roughness'].default_value = 0.16
-    if 'Emission Color' in bsdf.inputs:
-        bsdf.inputs['Emission Color'].default_value = (1.0, 0.025, 0.18, 1.0)
-        bsdf.inputs['Emission Strength'].default_value = 0.28
-    return mat
+    for i in range(rows):
+        t = i / (rows - 1)
+        # Width peaks around 58% of the length and stays broad at the tip so
+        # the notch has two lobes to cut between -- not a plain teardrop.
+        if t < 0.58:
+            w = 0.27 * (t / 0.58) ** 0.55
+        else:
+            k = (t - 0.58) / 0.42
+            w = 0.27 * (1.0 - 0.42 * k ** 1.8)
+        notch = max(0.0, (t - 0.82) / 0.18) ** 1.2
+        row = []
+        for j in range(cols):
+            u = j / (cols - 1) * 2.0 - 1.0
+            x = u * w + 0.022 * math.sin(t * 3.1)          # gentle asymmetry
+            y = t - 0.10 * notch * (1.0 - abs(u)) ** 1.6   # the tip notch
+            z = 0.075 * (1.0 - u * u) * math.sin(math.pi * t) ** 0.8 \
+                + 0.030 * (t - 0.5)                         # cup + lengthwise curl
+            row.append(len(verts))
+            verts.append((x, y - 0.5, z))                   # centred for tumbling
+            attr_t.append(t)
+            attr_s.append(abs(u))
+        grid.append(row)
 
+    faces = [(grid[i][j], grid[i][j + 1], grid[i + 1][j + 1], grid[i + 1][j])
+             for i in range(rows - 1) for j in range(cols - 1)]
 
-def make_dark_material():
-    mat = bpy.data.materials.get('MAT_Preview_Backdrop') or bpy.data.materials.new('MAT_Preview_Backdrop')
-    mat.use_nodes = True
-    bsdf = mat.node_tree.nodes.get('Principled BSDF')
-    bsdf.inputs['Base Color'].default_value = (0.003, 0.005, 0.012, 1.0)
-    bsdf.inputs['Roughness'].default_value = 0.6
-    return mat
-
-
-def make_fragment(source_collection):
-    # A thin, gently curved 3-D shard: tapered silhouette, raised center ridge, beveled edges.
-    name = 'Senbonzakura_Fragment_SOURCE'
-    old = bpy.data.objects.get(name)
-    if old:
-        bpy.data.objects.remove(old, do_unlink=True)
-
-    sections = 15
-    across = 5
-    verts = []
-    top_idx = []
-    bot_idx = []
-    for i in range(sections):
-        t = i / (sections - 1)
-        y = (t - 0.5) * 2.8
-        # Asymmetric, blade-like taper; the upper tip is slightly skewed.
-        w = 0.032 + 0.19 * math.sin(math.pi * t) ** 0.72
-        if t < 0.18:
-            w *= 0.55 + 2.5 * t
-        if t > 0.82:
-            w *= 0.72 + 1.5 * (1.0 - t)
-        cx = 0.075 * math.sin((t - 0.10) * math.pi * 1.2) + 0.035 * (t - 0.5)
-        top_row = []
-        bot_row = []
-        for j in range(across):
-            u = j / (across - 1) * 2.0 - 1.0
-            x = cx + u * w
-            ridge = 0.055 * (1.0 - abs(u) ** 1.65) * math.sin(math.pi * t) ** 0.7
-            z_top = 0.045 + ridge + 0.02 * math.sin(t * math.pi)
-            z_bot = -0.045 + 0.008 * math.cos(t * math.pi)
-            top_row.append(len(verts)); verts.append((x, y, z_top))
-            bot_row.append(len(verts)); verts.append((x, y, z_bot))
-        top_idx.append(top_row)
-        bot_idx.append(bot_row)
-
-    faces = []
-    for i in range(sections - 1):
-        for j in range(across - 1):
-            a, b = top_idx[i][j], top_idx[i][j + 1]
-            c, d = top_idx[i + 1][j + 1], top_idx[i + 1][j]
-            faces.append((a, b, c, d))
-            a, b = bot_idx[i][j + 1], bot_idx[i][j]
-            c, d = bot_idx[i + 1][j], bot_idx[i + 1][j + 1]
-            faces.append((a, b, c, d))
-        for row_a, row_b in ((top_idx, bot_idx),):
-            a, b = row_a[i][0], row_a[i + 1][0]
-            c, d = row_b[i + 1][0], row_b[i][0]
-            faces.append((a, b, c, d))
-            a, b = row_a[i + 1][-1], row_a[i][-1]
-            c, d = row_b[i][-1], row_b[i + 1][-1]
-            faces.append((a, b, c, d))
-    faces.append(tuple(reversed(top_idx[0])))
-    faces.append(tuple(bot_idx[0]))
-    faces.append(tuple(top_idx[-1]))
-    faces.append(tuple(reversed(bot_idx[-1])))
-
-    mesh = bpy.data.meshes.new('Senbonzakura_Fragment_MESH')
+    mesh = bpy.data.meshes.new('Petal_SOURCE_MESH')
     mesh.from_pydata(verts, [], faces)
     mesh.update()
-    obj = bpy.data.objects.new(name, mesh)
-    source_collection.objects.link(obj)
-    obj.data.materials.append(make_material())
+    for p in mesh.polygons:
+        p.use_smooth = True
+    a_t = mesh.attributes.new('pt', 'FLOAT', 'POINT')
+    a_s = mesh.attributes.new('ps', 'FLOAT', 'POINT')
+    for i in range(len(verts)):
+        a_t.data[i].value = attr_t[i]
+        a_s.data[i].value = attr_s[i]
+
+    obj = bpy.data.objects.new('Petal_SOURCE', mesh)
+    obj.data.materials.append(make_petal_material())
+    obj['README'] = 'Canonical sakura petal. Hidden; instanced by every petal layer.'
+    return obj
+
+
+# Blade profile shared by the mesh builder and the petal birth-point sampler,
+# so petals are always born exactly on the sword surface.
+SWORD_W = 0.080
+
+
+def sword_half_width(t):
+    return SWORD_W * (1.0 - t ** 2.4) ** 0.55
+
+
+def sword_local(t, u):
+    """Point on the blade surface in blade-local space (length along +Y, 1 unit
+    long). `u` in -1..1 runs across the width."""
+    w = sword_half_width(t)
+    cx = 0.030 * math.sin(t * math.pi * 0.85)
+    x = cx + u * w
+    z = 0.011 * (1.0 - abs(u) ** 1.7) * (1.0 - t * 0.6)
+    return Vector((x, t, z))
+
+
+def build_swords_mesh(swords):
+    """All blades baked into ONE mesh in world space, carrying the per-vertex
+    attributes the geometry nodes tree needs. No instancing -- that keeps the
+    erosion (which deletes real faces) trivial and attribute-safe."""
+    # Lots of sections along the length: the erosion deletes whole faces, so
+    # face size is what limits how ragged the dissolve front can look.
+    sections, across = 44, 5
+    verts, faces = [], []
+    a_u, a_axis, a_len, a_delay, a_edur, a_dt0, a_ddur, a_rest = [], [], [], [], [], [], [], []
+    a_to_center = []
+
+    for sw in swords:
+        rot = Euler(sw['rot'], 'XYZ').to_matrix()
+        axis = (rot @ Vector((0.0, 1.0, 0.0))).normalized()
+        base = Vector(sw['root'])
+        scale = Vector((sw['wid'], sw['len'], sw['wid']))
+
+        def place(t, u):
+            p = sword_local(t, u)
+            p = Vector((p.x * scale.x, p.y * scale.y, p.z * scale.z))
+            return base + rot @ p
+
+        top_idx, bot_idx = [], []
+        for i in range(sections):
+            t = i / (sections - 1)
+            trow, brow = [], []
+            for j in range(across):
+                u = j / (across - 1) * 2.0 - 1.0
+                p = place(t, u)
+                centre = place(t, 0.0)
+                n = rot @ Vector((0.0, 0.0, 1.0))
+                for side, store in ((1.0, trow), (-1.0, brow)):
+                    store.append(len(verts))
+                    vp = p + n * (side * 0.010 * sw['wid'])
+                    verts.append(tuple(vp))
+                    # Translation-invariant, so it stays correct after the blade
+                    # has been slid up out of the ground.
+                    a_to_center.append(tuple(centre - vp))
+                    a_u.append(t)
+                    a_axis.append(tuple(axis))
+                    a_len.append(sw['len'])
+                    a_delay.append(sw['delay'])
+                    a_edur.append(sw['edur'])
+                    a_dt0.append(sw['dt0'])
+                    a_ddur.append(sw['ddur'])
+                    a_rest.append(tuple(vp))
+            top_idx.append(trow)
+            bot_idx.append(brow)
+
+        for i in range(sections - 1):
+            for j in range(across - 1):
+                faces.append((top_idx[i][j], top_idx[i][j + 1],
+                              top_idx[i + 1][j + 1], top_idx[i + 1][j]))
+                faces.append((bot_idx[i][j + 1], bot_idx[i][j],
+                              bot_idx[i + 1][j], bot_idx[i + 1][j + 1]))
+                # side walls along both long edges
+            faces.append((top_idx[i][0], top_idx[i + 1][0],
+                          bot_idx[i + 1][0], bot_idx[i][0]))
+            faces.append((top_idx[i + 1][-1], top_idx[i][-1],
+                          bot_idx[i][-1], bot_idx[i + 1][-1]))
+        faces.append(tuple(reversed(top_idx[0])))
+        faces.append(tuple(bot_idx[0]))
+
+    mesh = bpy.data.meshes.new('Senbonzakura_Swords_MESH')
+    mesh.from_pydata(verts, [], faces)
+    mesh.update()
     for p in mesh.polygons:
         p.use_smooth = True
 
-    bevel = obj.modifiers.new('Edge softness (tiny bevel)', 'BEVEL')
-    bevel.width = 0.018
-    bevel.segments = 2
-    bevel.limit_method = 'ANGLE'
-    weighted = obj.modifiers.new('Weighted blade normals', 'WEIGHTED_NORMAL')
-    weighted.keep_sharp = True
-    obj.hide_render = True
-    obj.hide_set(True)
-    obj['README'] = 'Canonical Senbonzakura blade/petal shard. Keep separate from particle layers.'
+    def store(name, kind, data):
+        at = mesh.attributes.new(name, kind, 'POINT')
+        if kind == 'FLOAT':
+            for i, v in enumerate(data):
+                at.data[i].value = v
+        else:
+            for i, v in enumerate(data):
+                at.data[i].vector = v
+
+    store('blade_u', 'FLOAT', a_u)
+    store('sw_axis', 'FLOAT_VECTOR', a_axis)
+    store('sw_len', 'FLOAT', a_len)
+    store('sw_delay', 'FLOAT', a_delay)
+    store('sw_edur', 'FLOAT', a_edur)
+    store('sw_dt0', 'FLOAT', a_dt0)
+    store('sw_ddur', 'FLOAT', a_ddur)
+    store('rest_pos', 'FLOAT_VECTOR', a_rest)
+    store('to_center', 'FLOAT_VECTOR', a_to_center)
+
+    obj = bpy.data.objects.new('Senbonzakura_Swords', mesh)
+    obj.data.materials.append(make_blade_material())
+    obj['README'] = ('All Bankai blades in one mesh. The Geometry Nodes modifier '
+                     'raises them out of the ground and then erodes them tip-to-root.')
     return obj
 
 
-def make_point_mesh(name, count, seed, layer):
-    rng = random.Random(seed)
-    verts = []
-    velocities = []
-    rotations = []
-    scales = []
-    delays = []
-    swirls = []
-    if layer == 'FAR':
-        z0, xspread, ytop = -3.8, 4.6, -3.0
-        target_x, target_y, target_z = (-7.8, 7.8), (-4.4, 4.4), (-4.0, 2.5)
-        scale_range, delay_range = (0.045, 0.12), (0.0, 12.0)
-    elif layer == 'MID':
-        z0, xspread, ytop = -1.2, 3.8, -2.75
-        target_x, target_y, target_z = (-5.2, 5.2), (-3.1, 3.1), (2.0, 8.0)
-        scale_range, delay_range = (0.09, 0.25), (4.0, 18.0)
-    else:
-        z0, xspread, ytop = 1.5, 3.2, -2.45
-        target_x, target_y, target_z = (-2.5, 2.5), (-1.5, 1.5), (9.0, 15.0)
-        scale_range, delay_range = (0.18, 0.52), (9.0, 24.0)
+# ============================================================================
+# Sword formation
+# ============================================================================
 
-    for _ in range(count):
-        x = rng.uniform(-xspread, xspread)
-        y = rng.uniform(-6.2, ytop)
-        z = z0 + rng.uniform(-0.7, 0.7)
-        verts.append((x, y, z))
-        tx = rng.uniform(*target_x)
-        ty = rng.uniform(*target_y)
-        # A subtle diagonal bias prevents the field feeling like an even grid.
-        tx += 0.18 * ty + rng.uniform(-0.3, 0.3)
-        tz = rng.uniform(*target_z)
-        vx = tx - x
-        vy = ty - y
-        vz = tz - z
-        velocities.append((vx, vy, vz))
-        rotations.append((rng.uniform(-0.7, 0.7), rng.uniform(-0.7, 0.7), rng.uniform(-math.pi, math.pi)))
-        scales.append(rng.uniform(*scale_range))
-        delays.append(rng.uniform(*delay_range))
-        handed = -1.0 if rng.random() < 0.52 else 1.0
-        swirls.append((handed * -vy * rng.uniform(0.18, 0.48), handed * vx * rng.uniform(0.18, 0.48), rng.uniform(-1.2, 1.2)))
+def layout_swords():
+    """Three depth rows fanning open behind the anchor, as in the Bankai shot:
+    blades near screen centre stay vertical, outer blades splay outward."""
+    rng = random.Random(20260825)
+    rows = [
+        # (z depth, count, ndc half-spread, length range, width range)
+        (-11.0, 13, 1.34, (14.0, 19.0), (1.5, 2.2)),
+        (-5.5, 9, 1.16, (11.5, 15.5), (1.2, 1.8)),
+        (-1.5, 6, 1.00, (9.0, 12.5), (1.0, 1.4)),
+    ]
+    swords = []
+    for ri, (z, count, spread, lrange, wrange) in enumerate(rows):
+        for i in range(count):
+            nx = -spread + (2 * spread) * (i / max(1, count - 1))
+            nx += rng.uniform(-0.05, 0.05)
+            # Keep the blade line clear of the exact anchor column so the swarm
+            # reads as emerging *around* the character, not through them.
+            if abs(nx - ANCHOR_NDC[0]) < 0.10:
+                nx += 0.14 * (1 if nx >= ANCHOR_NDC[0] else -1)
+            root = ndc_to_world(nx, -1.30 - rng.uniform(0.0, 0.12), z)
+            # Outer blades lean outward -> the signature fan.
+            lean = -nx * 0.52 + rng.uniform(-0.07, 0.07)
+            tilt = rng.uniform(-0.16, 0.16)
+            swords.append({
+                'root': tuple(root),
+                'rot': (tilt, rng.uniform(-0.5, 0.5), lean),
+                'len': rng.uniform(*lrange),
+                'wid': rng.uniform(*wrange),
+                'z': z,
+                # Emergence finishes by frame 10; erosion starts after that, so
+                # blades are static while they shed petals (birth points stay put).
+                'delay': abs(nx) * 1.9 + rng.uniform(0.0, 0.5),
+                'edur': rng.uniform(5.5, 7.0),
+                'dt0': 10.0 + abs(nx) * 1.6 + rng.uniform(0.0, 1.2),
+                'ddur': rng.uniform(6.0, 8.0),
+                'row': ri,
+            })
+    return swords
+
+
+def sword_surface_point(sw, t, u, jitter_rng):
+    rot = Euler(sw['rot'], 'XYZ').to_matrix()
+    p = sword_local(t, u)
+    p = Vector((p.x * sw['wid'], p.y * sw['len'], p.z * sw['wid']))
+    world = Vector(sw['root']) + rot @ p
+    world += Vector((jitter_rng.uniform(-0.05, 0.05),
+                     jitter_rng.uniform(-0.05, 0.05),
+                     jitter_rng.uniform(-0.05, 0.05)))
+    return world, rot
+
+
+# ============================================================================
+# Petal trajectory baking
+# ============================================================================
+
+def bake_petal_layer(name, swords, count, spec, seed):
+    """Every petal is born on a blade at the moment the erosion front reaches
+    it, then flies a quadratic bezier to a destination expressed in camera NDC.
+    All of that is baked into point attributes here."""
+    rng = random.Random(seed)
+    weights = [sw['len'] for sw in swords]
+    total = sum(weights)
+
+    pos, ctrl, end, exitv, wob = [], [], [], [], []
+    t_birth, t_life, t_hold, wob_ph = [], [], [], []
+    s0, s1, s_grow, ease = [], [], [], []
+    rot0, spin = [], []
+
+    for i in range(count):
+        # pick a blade weighted by length
+        r = rng.uniform(0, total)
+        acc = 0.0
+        sw = swords[-1]
+        for cand, w in zip(swords, weights):
+            acc += w
+            if r <= acc:
+                sw = cand
+                break
+
+        t = rng.random() ** 0.75          # bias toward the tip, which sheds first
+        u = rng.uniform(-1.0, 1.0)
+        birth, rot = sword_surface_point(sw, t, u, rng)
+
+        # Synced to the erosion front travelling tip -> root.
+        tb = sw['dt0'] + (1.0 - t) * sw['ddur'] + rng.uniform(0.0, 0.8)
+
+        dest = spec['dest'](rng, sw, i, count)
+        nx, ny, z_end, arrive, size = dest
+        e = ndc_to_world(nx, ny, z_end)
+
+        life = max(4.0, arrive - tb)
+        bias = spec['ctrl_bias']
+        c = Vector((
+            birth.x + (e.x - birth.x) * (bias[0] + rng.uniform(-0.08, 0.08)),
+            birth.y + (e.y - birth.y) * (bias[1] + rng.uniform(-0.08, 0.08)),
+            birth.z + (e.z - birth.z) * (bias[2] + rng.uniform(-0.08, 0.08)),
+        ))
+
+        # By default a petal keeps going the way it arrived. Layers that would
+        # otherwise keep barrelling into the lens (and stay huge on screen)
+        # override this with a mostly screen-right/up exit instead.
+        ex = Vector(spec['exit_dir']) if spec.get('exit_dir') else (e - c)
+        if ex.length < 1e-5:
+            ex = Vector((1.0, 0.5, 0.0))
+        ex = ex.normalized() * spec['exit_speed'](rng)
+
+        pos.append(tuple(birth))
+        ctrl.append(tuple(c))
+        end.append(tuple(e))
+        exitv.append(tuple(ex))
+        t_birth.append(tb)
+        t_life.append(life)
+        # How long a petal dwells at its destination before the exit sweep takes
+        # over. The near wave uses this so all four waves accumulate into full
+        # coverage and then clear the frame together.
+        hold_until = spec['hold_until'](rng) if spec.get('hold_until') else 0.0
+        t_hold.append(max(0.0, hold_until - arrive))
+        s0.append(size * spec['start_scale'](rng))
+        s1.append(size)
+        s_grow.append(size * spec['grow'](rng))
+        ease.append(spec['ease'](rng))
+        wamp = spec['wobble'](rng)
+        wob.append((wamp * rng.uniform(-1, 1), wamp * rng.uniform(-1, 1),
+                    wamp * rng.uniform(-0.4, 0.4)))
+        wob_ph.append(rng.uniform(0, math.tau))
+
+        # Born aligned to the blade it came off, then tumbles free.
+        be = rot.to_euler()
+        rot0.append((be.x + rng.uniform(-0.35, 0.35),
+                     be.y + rng.uniform(-0.35, 0.35),
+                     be.z + rng.uniform(-0.35, 0.35)))
+        sp = spec['spin'](rng)
+        spin.append((sp * rng.uniform(-1, 1), sp * rng.uniform(-1, 1),
+                     sp * rng.uniform(-0.6, 0.6)))
 
     mesh = bpy.data.meshes.new(name + '_MESH')
-    mesh.from_pydata(verts, [], [])
+    mesh.from_pydata(pos, [], [])
     mesh.update()
+
+    def store(attr_name, kind, data):
+        at = mesh.attributes.new(attr_name, kind, 'POINT')
+        if kind == 'FLOAT':
+            for i, v in enumerate(data):
+                at.data[i].value = v
+        else:
+            for i, v in enumerate(data):
+                at.data[i].vector = v
+
+    store('p_ctrl', 'FLOAT_VECTOR', ctrl)
+    store('p_end', 'FLOAT_VECTOR', end)
+    store('p_exit', 'FLOAT_VECTOR', exitv)
+    store('p_wob', 'FLOAT_VECTOR', wob)
+    store('p_rot0', 'FLOAT_VECTOR', rot0)
+    store('p_spin', 'FLOAT_VECTOR', spin)
+    store('t_birth', 'FLOAT', t_birth)
+    store('t_life', 'FLOAT', t_life)
+    store('t_hold', 'FLOAT', t_hold)
+    store('s0', 'FLOAT', s0)
+    store('s1', 'FLOAT', s1)
+    store('s_grow', 'FLOAT', s_grow)
+    store('p_ease', 'FLOAT', ease)
+    store('wob_ph', 'FLOAT', wob_ph)
+
     obj = bpy.data.objects.new(name, mesh)
-    attr = mesh.attributes.new('blade_velocity', 'FLOAT_VECTOR', 'POINT')
-    attr_rot = mesh.attributes.new('blade_rot', 'FLOAT_VECTOR', 'POINT')
-    attr_scale = mesh.attributes.new('blade_scale', 'FLOAT', 'POINT')
-    attr_delay = mesh.attributes.new('blade_delay', 'FLOAT', 'POINT')
-    attr_swirl = mesh.attributes.new('blade_swirl', 'FLOAT_VECTOR', 'POINT')
-    for i in range(count):
-        attr.data[i].vector = velocities[i]
-        attr_rot.data[i].vector = rotations[i]
-        attr_scale.data[i].value = scales[i]
-        attr_delay.data[i].value = delays[i]
-        attr_swirl.data[i].vector = swirls[i]
-    obj['Particle layer'] = layer
-    obj['README'] = 'Edit this layer modifier inputs to tune count, burst timing, speed, swirl, and scale.'
+    obj['README'] = ('Baked petal trajectories. Every point carries its bezier '
+                     '(position -> p_ctrl -> p_end), timing and scale. Re-run '
+                     'build_senbonzakura.py to re-bake.')
     return obj
 
 
-def iface_socket(ng, name, in_out, socket_type, default=None, min_value=None, max_value=None, description=''):
-    s = ng.interface.new_socket(name=name, in_out=in_out, socket_type=socket_type)
-    if description:
-        s.description = description
-    if default is not None:
-        s.default_value = default
-    if min_value is not None:
-        s.min_value = min_value
-    if max_value is not None:
-        s.max_value = max_value
-    return s
+# ---- destination specs, one per storyboard beat ----------------------------
+
+def spec_far():
+    def dest(rng, sw, i, count):
+        nx = rng.uniform(1.20, 2.40)
+        ny = rng.uniform(0.55, 1.90)
+        z = rng.uniform(-13.0, -2.0)
+        arrive = rng.uniform(40.0, 56.0)
+        size = rng.uniform(0.14, 0.40)
+        return nx, ny, z, arrive, size
+    return {
+        'dest': dest,
+        'ctrl_bias': (0.62, 0.20, 0.50),   # go right first, curve up later
+        'exit_speed': lambda r: r.uniform(0.30, 0.60),
+        'start_scale': lambda r: r.uniform(0.45, 0.75),
+        'grow': lambda r: 0.0,
+        'ease': lambda r: r.uniform(1.15, 1.45),
+        'wobble': lambda r: r.uniform(0.06, 0.22),
+        'spin': lambda r: r.uniform(0.05, 0.16),
+    }
 
 
-def make_particle_nodes(name, source, default_count, start_frame, duration, clear_frame, velocity_multiplier, start_scale, burst_scale, seed):
-    ng = bpy.data.node_groups.get(name)
-    if ng:
-        bpy.data.node_groups.remove(ng, do_unlink=True)
+def spec_mid():
+    def dest(rng, sw, i, count):
+        nx = rng.uniform(1.10, 2.10)
+        ny = rng.uniform(0.45, 1.70)
+        z = rng.uniform(-1.0, 8.5)
+        arrive = rng.uniform(36.0, 54.0)
+        size = rng.uniform(0.30, 0.88)
+        return nx, ny, z, arrive, size
+    return {
+        'dest': dest,
+        'ctrl_bias': (0.58, 0.22, 0.42),
+        'exit_speed': lambda r: r.uniform(0.45, 0.85),
+        'start_scale': lambda r: r.uniform(0.40, 0.70),
+        'grow': lambda r: r.uniform(0.0, 0.02),
+        'ease': lambda r: r.uniform(1.25, 1.60),
+        'wobble': lambda r: r.uniform(0.05, 0.18),
+        'spin': lambda r: r.uniform(0.06, 0.20),
+    }
+
+
+def spec_near(waves, grid_x, grid_y):
+    """The engulfment wave. Destinations are laid out on a jittered screen grid
+    at four depths so that between ~frame 52 and 60 the frame is fully covered
+    by overlapping foreground petals."""
+    cells = []
+    for wi, (z, t_lo, t_hi) in enumerate(waves):
+        cw = 2.6 / grid_x
+        ch = 2.6 / grid_y
+        for gx in range(grid_x):
+            for gy in range(grid_y):
+                cells.append((wi, z, t_lo, t_hi,
+                              -1.30 + cw * (gx + 0.5),
+                              -1.30 + ch * (gy + 0.5),
+                              cw, ch))
+    random.Random(4242).shuffle(cells)
+
+    state = {'i': 0}
+
+    def dest(rng, sw, i, count):
+        cell = cells[state['i'] % len(cells)]
+        state['i'] += 1
+        wi, z, t_lo, t_hi, cx, cy, cw, ch = cell
+        nx = cx + rng.uniform(-0.45, 0.45) * cw
+        ny = cy + rng.uniform(-0.45, 0.45) * ch
+        arrive = rng.uniform(t_lo, t_hi)
+        # Big enough that its screen footprint overruns its cell, but NOT so big
+        # it becomes a featureless wall -- coverage has to come from the number
+        # of overlapping petals, so you still read petal silhouettes.
+        world_cell = max(cw * half_w(z), ch * half_h(z))
+        size = world_cell * rng.uniform(1.65, 2.35)
+        return nx, ny, z, arrive, size
+    return {
+        'dest': dest,
+        # Hold back, drift right/up, then swing hard toward the lens.
+        'ctrl_bias': (0.60, 0.34, 0.16),
+        'exit_dir': (0.82, 0.50, 0.20),   # sweep off right/up, not into the lens
+        'exit_speed': lambda r: r.uniform(1.30, 1.95),
+        # All four waves dwell until ~60 so coverage accumulates and holds
+        # through the cut point, then the whole mass clears together.
+        'hold_until': lambda r: r.uniform(58.5, 61.0),
+        'start_scale': lambda r: r.uniform(0.06, 0.14),
+        'grow': lambda r: 0.0,      # stop growing once they arrive
+        'ease': lambda r: r.uniform(1.9, 2.6),   # strong ease-in = rushing at you
+        'wobble': lambda r: r.uniform(0.06, 0.20),   # keeps the hold alive
+        'spin': lambda r: r.uniform(0.02, 0.06),     # slow, so none go edge-on
+    }
+
+
+def spec_crossers():
+    """A handful of fragments that punch straight past the camera plane."""
+    def dest(rng, sw, i, count):
+        nx = rng.uniform(-0.9, 0.9)
+        ny = rng.uniform(-0.9, 0.9)
+        z = rng.uniform(18.2, 20.2)
+        arrive = rng.uniform(42.0, 61.0)
+        size = rng.uniform(0.22, 0.55)
+        return nx, ny, z, arrive, size
+    return {
+        'dest': dest,
+        'ctrl_bias': (0.55, 0.32, 0.12),
+        'exit_speed': lambda r: r.uniform(1.0, 1.6),
+        'start_scale': lambda r: r.uniform(0.04, 0.10),
+        'grow': lambda r: 0.0,
+        'ease': lambda r: r.uniform(2.2, 3.0),
+        'wobble': lambda r: r.uniform(0.02, 0.08),
+        'spin': lambda r: r.uniform(0.04, 0.12),
+    }
+
+
+# ============================================================================
+# Geometry nodes -- a tiny builder DSL keeps the trees readable
+# ============================================================================
+
+class NB:
+    def __init__(self, ng):
+        self.ng = ng
+        self.n = ng.nodes
+        self.l = ng.links
+        self._x, self._y = -1600.0, 600.0
+
+    def new(self, idname, **kw):
+        nd = self.n.new(idname)
+        nd.location = (self._x, self._y)
+        self._y -= 190
+        if self._y < -1600:
+            self._y = 600
+            self._x += 230
+        for k, v in kw.items():
+            setattr(nd, k, v)
+        return nd
+
+    def plug(self, node, key, value):
+        if value is None:
+            return
+        if hasattr(value, 'is_output'):
+            self.l.new(value, node.inputs[key])
+        else:
+            node.inputs[key].default_value = value
+
+    def math(self, op, a, b=None, clamp=False):
+        nd = self.new('ShaderNodeMath', operation=op, use_clamp=clamp)
+        self.plug(nd, 0, a)
+        self.plug(nd, 1, b)
+        return nd.outputs[0]
+
+    def vmath(self, op, a, b=None, scale=None):
+        nd = self.new('ShaderNodeVectorMath', operation=op)
+        self.plug(nd, 0, a)
+        if b is not None:
+            self.plug(nd, 1, b)
+        if scale is not None:
+            self.plug(nd, 'Scale', scale)
+        return nd.outputs['Vector']
+
+    def attr(self, name, kind='FLOAT'):
+        nd = self.new('GeometryNodeInputNamedAttribute', data_type=kind)
+        nd.inputs['Name'].default_value = name
+        return nd.outputs['Attribute']
+
+    def frame(self):
+        return self.new('GeometryNodeInputSceneTime').outputs['Frame']
+
+    def position(self):
+        return self.new('GeometryNodeInputPosition').outputs['Position']
+
+    def compare(self, op, a, b):
+        nd = self.new('FunctionNodeCompare', data_type='FLOAT', operation=op)
+        self.plug(nd, 0, a)
+        self.plug(nd, 1, b)
+        return nd.outputs['Result']
+
+    def combine(self, x, y, z):
+        nd = self.new('ShaderNodeCombineXYZ')
+        for i, v in enumerate((x, y, z)):
+            self.plug(nd, i, v)
+        return nd.outputs['Vector']
+
+    def euler_to_rot(self, vec):
+        nd = self.new('FunctionNodeEulerToRotation')
+        self.plug(nd, 'Euler', vec)
+        return nd.outputs['Rotation']
+
+
+def make_sword_nodes(name):
     ng = bpy.data.node_groups.new(name, 'GeometryNodeTree')
-    iface_socket(ng, 'Geometry', 'INPUT', 'NodeSocketGeometry')
-    iface_socket(ng, 'Geometry', 'OUTPUT', 'NodeSocketGeometry')
-    iface_socket(ng, 'Particle Count', 'INPUT', 'NodeSocketInt', default_count, 1, 10000, 'Visible point count for this layer.')
-    iface_socket(ng, 'Burst Frame', 'INPUT', 'NodeSocketFloat', start_frame, 0, 250, 'Frame where acceleration begins.')
-    iface_socket(ng, 'Burst Duration', 'INPUT', 'NodeSocketFloat', duration, 1, 120, 'Frames over which particles reach full travel.')
-    iface_socket(ng, 'Clear Frame', 'INPUT', 'NodeSocketFloat', clear_frame, 0, 300, 'Particles scale to zero after this frame.')
-    iface_socket(ng, 'Drift Speed', 'INPUT', 'NodeSocketFloat', 0.004, 0, 0.1, 'Slow pre-burst motion; small values are best.')
-    iface_socket(ng, 'Velocity Multiplier', 'INPUT', 'NodeSocketFloat', velocity_multiplier, 0, 5, 'Multiplies each baked per-particle velocity.')
-    iface_socket(ng, 'Direction Bias', 'INPUT', 'NodeSocketVector', (0.0, 0.0, 0.0), description='Adds a global XYZ direction to the varied per-particle paths.')
-    iface_socket(ng, 'Swirl Strength', 'INPUT', 'NodeSocketFloat', 0.38, 0, 5, 'Organic sideways sweep during the burst.')
-    iface_socket(ng, 'Start Scale', 'INPUT', 'NodeSocketFloat', start_scale, 0, 1, 'Scale before the burst.')
-    iface_socket(ng, 'Burst Scale', 'INPUT', 'NodeSocketFloat', burst_scale, 0, 5, 'Scale at full travel.')
-    iface_socket(ng, 'Rotation Speed', 'INPUT', 'NodeSocketVector', (0.7, 1.2, 2.0), description='Angular speed vector during the burst.')
-    iface_socket(ng, 'Seed Offset', 'INPUT', 'NodeSocketInt', seed, 0, 1000, 'Per-layer variation seed (stored for organization).')
+    ng.interface.new_socket(name='Geometry', in_out='INPUT', socket_type='NodeSocketGeometry')
+    ng.interface.new_socket(name='Geometry', in_out='OUTPUT', socket_type='NodeSocketGeometry')
+    s = ng.interface.new_socket(name='Emerge Height', in_out='INPUT', socket_type='NodeSocketFloat')
+    s.default_value, s.min_value, s.max_value = 1.18, 0.0, 3.0
+    s.description = 'How far below ground each blade starts, as a fraction of its length.'
+    s = ng.interface.new_socket(name='Erosion Roughness', in_out='INPUT', socket_type='NodeSocketFloat')
+    s.default_value, s.min_value, s.max_value = 0.22, 0.0, 0.6
+    s.description = 'Ragged-ness of the dissolve front. 0 = perfectly straight cut.'
+    s = ng.interface.new_socket(name='Front Glow Width', in_out='INPUT', socket_type='NodeSocketFloat')
+    s.default_value, s.min_value, s.max_value = 0.055, 0.005, 0.5
+    s.description = 'Length of the hot glowing band trailing the dissolve front.'
+    s = ng.interface.new_socket(name='Front Taper', in_out='INPUT', socket_type='NodeSocketFloat')
+    s.default_value, s.min_value, s.max_value = 0.10, 0.0, 0.5
+    s.description = ('How far back the blade narrows toward its own centreline as '
+                     'it erodes. Without this the dissolve leaves blunt stumps.')
 
-    n = ng.nodes; l = ng.links
-    n.clear()
-    gi = n.new('NodeGroupInput'); gi.location = (-1100, 120)
-    go = n.new('NodeGroupOutput'); go.location = (780, 100)
-    idx = n.new('GeometryNodeInputIndex'); idx.location = (-1050, -320)
-    cmp_count = n.new('FunctionNodeCompare'); cmp_count.data_type = 'INT'; cmp_count.operation = 'GREATER_EQUAL'; cmp_count.location = (-850, -320)
-    l.new(idx.outputs['Index'], cmp_count.inputs['A']); l.new(gi.outputs['Particle Count'], cmp_count.inputs['B'])
-    delete = n.new('GeometryNodeDeleteGeometry'); delete.domain = 'POINT'; delete.location = (-660, 100)
-    l.new(gi.outputs['Geometry'], delete.inputs['Geometry']); l.new(cmp_count.outputs['Result'], delete.inputs['Selection'])
+    nb = NB(ng)
+    gi = nb.new('NodeGroupInput')
+    go = nb.new('NodeGroupOutput')
 
-    time = n.new('GeometryNodeInputSceneTime'); time.location = (-1050, -20)
-    sub0 = n.new('ShaderNodeMath'); sub0.operation = 'SUBTRACT'; sub0.location = (-850, -20)
-    l.new(time.outputs['Frame'], sub0.inputs[0]); l.new(gi.outputs['Burst Frame'], sub0.inputs[1])
-    delay = n.new('GeometryNodeInputNamedAttribute'); delay.data_type = 'FLOAT'; delay.inputs['Name'].default_value = 'blade_delay'; delay.location = (-1050, -170)
-    sub1 = n.new('ShaderNodeMath'); sub1.operation = 'SUBTRACT'; sub1.location = (-650, -20)
-    l.new(sub0.outputs[0], sub1.inputs[0]); l.new(delay.outputs['Attribute'], sub1.inputs[1])
-    div = n.new('ShaderNodeMath'); div.operation = 'DIVIDE'; div.location = (-470, -20)
-    l.new(sub1.outputs[0], div.inputs[0]); l.new(gi.outputs['Burst Duration'], div.inputs[1])
-    mx = n.new('ShaderNodeMath'); mx.operation = 'MAXIMUM'; mx.location = (-290, -20); mx.inputs[1].default_value = 0.0
-    l.new(div.outputs[0], mx.inputs[0])
-    mn = n.new('ShaderNodeMath'); mn.operation = 'MINIMUM'; mn.location = (-110, -20); mn.inputs[1].default_value = 1.0
-    l.new(mx.outputs[0], mn.inputs[0])
-    progress = mn.outputs[0]
+    frame = nb.frame()
+    blade_u = nb.attr('blade_u')
+    axis = nb.attr('sw_axis', 'FLOAT_VECTOR')
+    length = nb.attr('sw_len')
+    delay = nb.attr('sw_delay')
+    edur = nb.attr('sw_edur')
+    dt0 = nb.attr('sw_dt0')
+    ddur = nb.attr('sw_ddur')
+    rest = nb.attr('rest_pos', 'FLOAT_VECTOR')
+    to_center = nb.attr('to_center', 'FLOAT_VECTOR')
 
-    vel = n.new('GeometryNodeInputNamedAttribute'); vel.data_type = 'FLOAT_VECTOR'; vel.inputs['Name'].default_value = 'blade_velocity'; vel.location = (-460, 220)
-    biasadd = n.new('ShaderNodeVectorMath'); biasadd.operation = 'ADD'; biasadd.location = (-285, 220)
-    l.new(vel.outputs['Attribute'], biasadd.inputs[0]); l.new(gi.outputs['Direction Bias'], biasadd.inputs[1])
-    vmul = n.new('ShaderNodeVectorMath'); vmul.operation = 'SCALE'; vmul.location = (-100, 220)
-    l.new(biasadd.outputs['Vector'], vmul.inputs[0]); l.new(gi.outputs['Velocity Multiplier'], vmul.inputs[3]); l.new(progress, vmul.inputs[1])
+    # --- erosion front travels tip (u=1) -> root (u=0) ---
+    prog = nb.math('DIVIDE', nb.math('SUBTRACT', frame, dt0), ddur, clamp=True)
+    front = nb.math('SUBTRACT', 1.0, prog)
+    noise = nb.new('ShaderNodeTexNoise')
+    nb.plug(noise, 'Vector', nb.vmath('SCALE', rest, scale=6.0))
+    nb.plug(noise, 'Scale', 1.0)
+    nb.plug(noise, 'Detail', 4.0)
+    jag = nb.math('MULTIPLY', nb.math('SUBTRACT', noise.outputs['Factor'], 0.5),
+                  gi.outputs['Erosion Roughness'])
+    front_n = nb.math('ADD', front, jag)
 
-    # Slow pre-burst drift, capped at the burst frame so the burst target stays stable.
-    drift_cap = n.new('ShaderNodeMath'); drift_cap.operation = 'MINIMUM'; drift_cap.location = (-650, 520)
-    l.new(time.outputs['Frame'], drift_cap.inputs[0]); l.new(gi.outputs['Burst Frame'], drift_cap.inputs[1])
-    drift_amt = n.new('ShaderNodeMath'); drift_amt.operation = 'MULTIPLY'; drift_amt.location = (-470, 520)
-    l.new(drift_cap.outputs[0], drift_amt.inputs[0]); l.new(gi.outputs['Drift Speed'], drift_amt.inputs[1])
-    drift_vec = n.new('ShaderNodeVectorMath'); drift_vec.operation = 'SCALE'; drift_vec.location = (-280, 520)
-    l.new(vel.outputs['Attribute'], drift_vec.inputs[0]); l.new(drift_amt.outputs[0], drift_vec.inputs[3])
-    swirl = n.new('GeometryNodeInputNamedAttribute'); swirl.data_type = 'FLOAT_VECTOR'; swirl.inputs['Name'].default_value = 'blade_swirl'; swirl.location = (-460, 400)
-    sine_mul = n.new('ShaderNodeMath'); sine_mul.operation = 'MULTIPLY'; sine_mul.location = (-100, -170); sine_mul.inputs[1].default_value = math.pi
-    l.new(progress, sine_mul.inputs[0])
-    sine = n.new('ShaderNodeMath'); sine.operation = 'SINE'; sine.location = (80, -170); l.new(sine_mul.outputs[0], sine.inputs[0])
-    swirl_scale = n.new('ShaderNodeVectorMath'); swirl_scale.operation = 'SCALE'; swirl_scale.location = (220, 400)
-    l.new(swirl.outputs['Attribute'], swirl_scale.inputs[0]); l.new(sine.outputs[0], swirl_scale.inputs[1]); l.new(gi.outputs['Swirl Strength'], swirl_scale.inputs[3])
-    burst_offset = n.new('ShaderNodeVectorMath'); burst_offset.operation = 'ADD'; burst_offset.location = (390, 250)
-    l.new(vmul.outputs['Vector'], burst_offset.inputs[0]); l.new(swirl_scale.outputs['Vector'], burst_offset.inputs[1])
-    offset = n.new('ShaderNodeVectorMath'); offset.operation = 'ADD'; offset.location = (540, 330)
-    l.new(burst_offset.outputs['Vector'], offset.inputs[0]); l.new(drift_vec.outputs['Vector'], offset.inputs[1])
-    setpos = n.new('GeometryNodeSetPosition'); setpos.location = (-30, 100)
-    l.new(delete.outputs['Geometry'], setpos.inputs['Geometry']); l.new(offset.outputs['Vector'], setpos.inputs['Offset'])
+    # distance behind the front, in blade-length units
+    d = nb.math('MAXIMUM', nb.math('SUBTRACT', front_n, blade_u), 0.0)
 
-    objinfo = n.new('GeometryNodeObjectInfo'); objinfo.location = (0, 640); objinfo.inputs['Object'].default_value = source; objinfo.inputs['As Instance'].default_value = True
-    inst = n.new('GeometryNodeInstanceOnPoints'); inst.location = (220, 100)
-    l.new(setpos.outputs['Geometry'], inst.inputs['Points']); l.new(objinfo.outputs['Geometry'], inst.inputs['Instance'])
+    # --- emergence: slide up along the blade's own axis, ease-out ---
+    e = nb.math('SUBTRACT', frame, nb.math('ADD', delay, 1.0))
+    e = nb.math('DIVIDE', e, edur, clamp=True)
+    inv = nb.math('SUBTRACT', 1.0, e)
+    inv3 = nb.math('POWER', inv, 3.0)                 # (1-e)^3
+    drop = nb.math('MULTIPLY', inv3, nb.math('MULTIPLY', length, gi.outputs['Emerge Height']))
+    offset = nb.vmath('SCALE', axis, scale=nb.math('MULTIPLY', drop, -1.0))
 
-    pscale = n.new('GeometryNodeInputNamedAttribute'); pscale.data_type = 'FLOAT'; pscale.inputs['Name'].default_value = 'blade_scale'; pscale.location = (-20, -420)
-    span = n.new('ShaderNodeMath'); span.operation = 'SUBTRACT'; span.location = (140, -330)
-    l.new(gi.outputs['Burst Scale'], span.inputs[0]); l.new(gi.outputs['Start Scale'], span.inputs[1])
-    span_mul = n.new('ShaderNodeMath'); span_mul.operation = 'MULTIPLY'; span_mul.location = (320, -250); l.new(progress, span_mul.inputs[0]); l.new(span.outputs[0], span_mul.inputs[1])
-    add_scale = n.new('ShaderNodeMath'); add_scale.operation = 'ADD'; add_scale.location = (480, -250); l.new(span_mul.outputs[0], add_scale.inputs[0]); l.new(gi.outputs['Start Scale'], add_scale.inputs[1])
-    scale_mul = n.new('ShaderNodeMath'); scale_mul.operation = 'MULTIPLY'; scale_mul.location = (650, -250); l.new(pscale.outputs['Attribute'], scale_mul.inputs[0]); l.new(add_scale.outputs[0], scale_mul.inputs[1])
-    clear_sub = n.new('ShaderNodeMath'); clear_sub.operation = 'SUBTRACT'; clear_sub.location = (300, -420)
-    l.new(time.outputs['Frame'], clear_sub.inputs[0]); l.new(gi.outputs['Clear Frame'], clear_sub.inputs[1])
-    clear_div = n.new('ShaderNodeMath'); clear_div.operation = 'DIVIDE'; clear_div.location = (470, -420); clear_div.inputs[1].default_value = 4.0; l.new(clear_sub.outputs[0], clear_div.inputs[0])
-    clear_max = n.new('ShaderNodeMath'); clear_max.operation = 'MAXIMUM'; clear_max.location = (630, -420); clear_max.inputs[1].default_value = 0.0; l.new(clear_div.outputs[0], clear_max.inputs[0])
-    clear_min = n.new('ShaderNodeMath'); clear_min.operation = 'MINIMUM'; clear_min.location = (790, -420); clear_min.inputs[1].default_value = 1.0; l.new(clear_max.outputs[0], clear_min.inputs[0])
-    clear_inv = n.new('ShaderNodeMath'); clear_inv.operation = 'SUBTRACT'; clear_inv.location = (950, -420); clear_inv.inputs[0].default_value = 1.0; l.new(clear_min.outputs[0], clear_inv.inputs[1])
-    final_scale = n.new('ShaderNodeMath'); final_scale.operation = 'MULTIPLY'; final_scale.location = (950, -250); l.new(scale_mul.outputs[0], final_scale.inputs[0]); l.new(clear_inv.outputs[0], final_scale.inputs[1])
-    scale_vec = n.new('ShaderNodeCombineXYZ'); scale_vec.location = (820, -250)
-    for sock in scale_vec.inputs:
-        l.new(final_scale.outputs[0], sock)
-    scale_instances = n.new('GeometryNodeScaleInstances'); scale_instances.location = (440, 100); l.new(inst.outputs['Instances'], scale_instances.inputs['Instances']); l.new(scale_vec.outputs['Vector'], scale_instances.inputs['Scale'])
+    # --- taper: pull the surface toward the centreline as the front approaches,
+    # so the blade erodes to a needle instead of a blunt bright stump ---
+    shrink = nb.math('SUBTRACT', 1.0,
+                     nb.math('DIVIDE', d, gi.outputs['Front Taper'], clamp=True))
+    offset = nb.vmath('ADD', offset, nb.vmath('SCALE', to_center, scale=shrink))
 
-    rot = n.new('GeometryNodeInputNamedAttribute'); rot.data_type = 'FLOAT_VECTOR'; rot.inputs['Name'].default_value = 'blade_rot'; rot.location = (0, -580)
-    rspeed = n.new('ShaderNodeVectorMath'); rspeed.operation = 'SCALE'; rspeed.location = (180, -580); l.new(gi.outputs['Rotation Speed'], rspeed.inputs[0]); l.new(progress, rspeed.inputs[3])
-    rotadd = n.new('ShaderNodeVectorMath'); rotadd.operation = 'ADD'; rotadd.location = (360, -580); l.new(rot.outputs['Attribute'], rotadd.inputs[0]); l.new(rspeed.outputs['Vector'], rotadd.inputs[1])
-    rotate = n.new('GeometryNodeRotateInstances'); rotate.location = (620, 100); l.new(scale_instances.outputs['Instances'], rotate.inputs['Instances']); l.new(rotadd.outputs['Vector'], rotate.inputs['Rotation'])
-    l.new(rotate.outputs['Instances'], go.inputs['Geometry'])
+    setpos = nb.new('GeometryNodeSetPosition')
+    nb.plug(setpos, 'Geometry', gi.outputs['Geometry'])
+    nb.plug(setpos, 'Offset', offset)
+
+    # hot band just behind the front
+    glow = nb.math('SUBTRACT', 1.0,
+                   nb.math('DIVIDE', d, gi.outputs['Front Glow Width'], clamp=True))
+    store = nb.new('GeometryNodeStoreNamedAttribute', data_type='FLOAT', domain='POINT')
+    store.inputs['Name'].default_value = 'diss_glow'
+    nb.plug(store, 'Geometry', setpos.outputs['Geometry'])
+    nb.plug(store, 'Value', glow)
+
+    delete = nb.new('GeometryNodeDeleteGeometry', domain='FACE')
+    nb.plug(delete, 'Geometry', store.outputs['Geometry'])
+    nb.plug(delete, 'Selection', nb.compare('GREATER_THAN', blade_u, front_n))
+    nb.l.new(delete.outputs['Geometry'], go.inputs['Geometry'])
     return ng
 
 
-def add_layer(collection, source, name, count, seed, layer, vel_mult, burst_scale):
-    mesh_obj = make_point_mesh(name + '_POINTS', count, seed, layer)
-    collection.objects.link(mesh_obj)
-    ng = make_particle_nodes(name + '_NODES', source, count, 22, 12, 45, vel_mult, 0.018, burst_scale, seed)
-    mod = mesh_obj.modifiers.new('Senbonzakura controls (Geometry Nodes)', 'NODES')
-    mod.node_group = ng
-    mesh_obj['Controls'] = 'Open this modifier: Particle Count, Burst Frame, Burst Duration, Clear Frame, Drift Speed, Velocity Multiplier, Direction Bias, Swirl Strength, Start Scale, Burst Scale, Rotation Speed.'
-    return mesh_obj
+def make_petal_nodes(name, petal_source):
+    ng = bpy.data.node_groups.new(name, 'GeometryNodeTree')
+    ng.interface.new_socket(name='Geometry', in_out='INPUT', socket_type='NodeSocketGeometry')
+    ng.interface.new_socket(name='Geometry', in_out='OUTPUT', socket_type='NodeSocketGeometry')
+    s = ng.interface.new_socket(name='Visible Count', in_out='INPUT', socket_type='NodeSocketInt')
+    s.default_value, s.min_value, s.max_value = 100000, 0, 100000
+    s.description = 'Trim the layer down for fast previews. Does not re-bake anything.'
+    s = ng.interface.new_socket(name='Scale Multiplier', in_out='INPUT', socket_type='NodeSocketFloat')
+    s.default_value, s.min_value, s.max_value = 1.0, 0.0, 8.0
+    s.description = 'Global size of every petal in this layer.'
+    s = ng.interface.new_socket(name='Time Offset', in_out='INPUT', socket_type='NodeSocketFloat')
+    s.default_value, s.min_value, s.max_value = 0.0, -60.0, 60.0
+    s.description = 'Shift this whole layer earlier (-) or later (+) in frames.'
+    s = ng.interface.new_socket(name='Wobble', in_out='INPUT', socket_type='NodeSocketFloat')
+    s.default_value, s.min_value, s.max_value = 1.0, 0.0, 5.0
+    s.description = 'Amount of secondary drift on top of the baked bezier path.'
+    s = ng.interface.new_socket(name='Spin', in_out='INPUT', socket_type='NodeSocketFloat')
+    s.default_value, s.min_value, s.max_value = 1.0, 0.0, 5.0
+    s.description = 'Tumble speed multiplier.'
 
+    nb = NB(ng)
+    gi = nb.new('NodeGroupInput')
+    go = nb.new('NodeGroupOutput')
+
+    frame = nb.math('SUBTRACT', nb.frame(), gi.outputs['Time Offset'])
+    birth = nb.position()
+    ctrl = nb.attr('p_ctrl', 'FLOAT_VECTOR')
+    end = nb.attr('p_end', 'FLOAT_VECTOR')
+    exitv = nb.attr('p_exit', 'FLOAT_VECTOR')
+    wob = nb.attr('p_wob', 'FLOAT_VECTOR')
+    rot0 = nb.attr('p_rot0', 'FLOAT_VECTOR')
+    spin = nb.attr('p_spin', 'FLOAT_VECTOR')
+    t_birth = nb.attr('t_birth')
+    t_life = nb.attr('t_life')
+    t_hold = nb.attr('t_hold')
+    s0 = nb.attr('s0')
+    s1 = nb.attr('s1')
+    s_grow = nb.attr('s_grow')
+    ease = nb.attr('p_ease')
+    wob_ph = nb.attr('wob_ph')
+
+    # --- preview trim ---
+    idx = nb.new('GeometryNodeInputIndex')
+    cmp_count = nb.new('FunctionNodeCompare', data_type='INT', operation='GREATER_EQUAL')
+    nb.l.new(idx.outputs['Index'], cmp_count.inputs['A'])
+    nb.l.new(gi.outputs['Visible Count'], cmp_count.inputs['B'])
+    trim = nb.new('GeometryNodeDeleteGeometry', domain='POINT')
+    nb.plug(trim, 'Geometry', gi.outputs['Geometry'])
+    nb.plug(trim, 'Selection', cmp_count.outputs['Result'])
+
+    # --- bezier along the baked path ---
+    age = nb.math('SUBTRACT', frame, t_birth)
+    u = nb.math('DIVIDE', age, t_life, clamp=True)
+    ue = nb.math('POWER', u, ease)
+    omu = nb.math('SUBTRACT', 1.0, ue)
+    w0 = nb.math('MULTIPLY', omu, omu)
+    w1 = nb.math('MULTIPLY', nb.math('MULTIPLY', omu, ue), 2.0)
+    w2 = nb.math('MULTIPLY', ue, ue)
+    p = nb.vmath('ADD', nb.vmath('SCALE', birth, scale=w0),
+                 nb.vmath('SCALE', ctrl, scale=w1))
+    p = nb.vmath('ADD', p, nb.vmath('SCALE', end, scale=w2))
+
+    # --- keep going past the destination so petals exit rather than stop ---
+    over = nb.math('MAXIMUM',
+                   nb.math('SUBTRACT', age, nb.math('ADD', t_life, t_hold)), 0.0)
+    p = nb.vmath('ADD', p, nb.vmath('SCALE', exitv, scale=over))
+
+    # --- secondary drift ---
+    sw = nb.math('SINE', nb.math('ADD', nb.math('MULTIPLY', frame, 0.55), wob_ph))
+    p = nb.vmath('ADD', p, nb.vmath('SCALE', wob,
+                                    scale=nb.math('MULTIPLY', sw, gi.outputs['Wobble'])))
+
+    setpos = nb.new('GeometryNodeSetPosition')
+    nb.plug(setpos, 'Geometry', trim.outputs['Geometry'])
+    nb.plug(setpos, 'Position', p)
+
+    # --- scale: grows toward the destination, zero before birth ---
+    size = nb.math('ADD', s0, nb.math('MULTIPLY', ue, nb.math('SUBTRACT', s1, s0)))
+    size = nb.math('ADD', size, nb.math('MULTIPLY', s_grow, over))
+    alive = nb.compare('GREATER_EQUAL', age, 0.0)
+    size = nb.math('MULTIPLY', size, alive)
+    size = nb.math('MULTIPLY', size, gi.outputs['Scale Multiplier'])
+
+    rot = nb.vmath('ADD', rot0,
+                   nb.vmath('SCALE', spin,
+                            scale=nb.math('MULTIPLY', nb.math('MAXIMUM', age, 0.0),
+                                          gi.outputs['Spin'])))
+
+    objinfo = nb.new('GeometryNodeObjectInfo')
+    objinfo.inputs['Object'].default_value = petal_source
+    objinfo.inputs['As Instance'].default_value = True
+
+    inst = nb.new('GeometryNodeInstanceOnPoints')
+    nb.plug(inst, 'Points', setpos.outputs['Geometry'])
+    nb.plug(inst, 'Instance', objinfo.outputs['Geometry'])
+    nb.plug(inst, 'Rotation', nb.euler_to_rot(rot))
+    nb.plug(inst, 'Scale', nb.combine(size, size, size))
+    nb.l.new(inst.outputs['Instances'], go.inputs['Geometry'])
+    return ng
+
+
+# ============================================================================
+# Materials
+# ============================================================================
+
+def make_petal_material():
+    mat = bpy.data.materials.get('MAT_Sakura_Petal') or bpy.data.materials.new('MAT_Sakura_Petal')
+    mat.use_nodes = True
+    mat.surface_render_method = 'DITHERED'
+    mat.use_backface_culling = False
+    nt = mat.node_tree
+    nt.nodes.clear()
+    out = nt.nodes.new('ShaderNodeOutputMaterial'); out.location = (600, 0)
+    bsdf = nt.nodes.new('ShaderNodeBsdfPrincipled'); bsdf.location = (300, 0)
+    nt.links.new(bsdf.outputs['BSDF'], out.inputs['Surface'])
+
+    a_t = nt.nodes.new('ShaderNodeAttribute'); a_t.attribute_name = 'pt'; a_t.location = (-800, 200)
+    a_s = nt.nodes.new('ShaderNodeAttribute'); a_s.attribute_name = 'ps'; a_s.location = (-800, 0)
+
+    # Lighter toward the centre, more saturated toward the edges + tip.
+    edge = nt.nodes.new('ShaderNodeMath'); edge.operation = 'POWER'
+    edge.inputs[1].default_value = 0.8; edge.location = (-600, 0)
+    nt.links.new(a_s.outputs['Fac'], edge.inputs[0])
+
+    mix1 = nt.nodes.new('ShaderNodeMix'); mix1.data_type = 'RGBA'; mix1.location = (-380, 100)
+    mix1.inputs[6].default_value = C_PETAL_HILT
+    mix1.inputs[7].default_value = C_PETAL_FILL
+    nt.links.new(edge.outputs[0], mix1.inputs[0])
+
+    tipf = nt.nodes.new('ShaderNodeMath'); tipf.operation = 'POWER'
+    tipf.inputs[1].default_value = 1.5; tipf.location = (-600, -180)
+    nt.links.new(a_t.outputs['Fac'], tipf.inputs[0])
+    tipf2 = nt.nodes.new('ShaderNodeMath'); tipf2.operation = 'MULTIPLY'
+    tipf2.inputs[1].default_value = 0.45; tipf2.location = (-420, -180)
+    nt.links.new(tipf.outputs[0], tipf2.inputs[0])
+
+    mix2 = nt.nodes.new('ShaderNodeMix'); mix2.data_type = 'RGBA'; mix2.location = (-160, 60)
+    mix2.inputs[7].default_value = C_PETAL_DEEP
+    nt.links.new(mix1.outputs[2], mix2.inputs[6])
+    nt.links.new(tipf2.outputs[0], mix2.inputs[0])
+    nt.links.new(mix2.outputs[2], bsdf.inputs['Base Color'])
+
+    # Soft luminous rim, as on the reference sheet -- low radius, never hides
+    # the silhouette.
+    rim = nt.nodes.new('ShaderNodeMath'); rim.operation = 'POWER'
+    rim.inputs[1].default_value = 3.0; rim.location = (-420, -380)
+    nt.links.new(a_s.outputs['Fac'], rim.inputs[0])
+    rim2 = nt.nodes.new('ShaderNodeMath'); rim2.operation = 'MULTIPLY_ADD'
+    rim2.inputs[1].default_value = 0.80
+    rim2.inputs[2].default_value = 0.24
+    rim2.location = (-240, -380)
+    nt.links.new(rim.outputs[0], rim2.inputs[0])
+    nt.links.new(rim2.outputs[0], bsdf.inputs['Emission Strength'])
+    bsdf.inputs['Emission Color'].default_value = C_PETAL_GLOW
+
+    bsdf.inputs['Metallic'].default_value = 0.0
+    bsdf.inputs['Roughness'].default_value = 0.42
+    bsdf.inputs['Sheen Weight'].default_value = 0.45
+    bsdf.inputs['Sheen Roughness'].default_value = 0.30
+    bsdf.inputs['Sheen Tint'].default_value = C_PETAL_HILT
+    if 'Thin Wall' in bsdf.inputs:
+        bsdf.inputs['Thin Wall'].default_value = True
+    bsdf.inputs['Subsurface Weight'].default_value = 0.22
+    bsdf.inputs['Subsurface Radius'].default_value = (0.9, 0.42, 0.55)
+    bsdf.inputs['Subsurface Scale'].default_value = 0.05
+    return mat
+
+
+def make_blade_material():
+    mat = bpy.data.materials.get('MAT_Senbonzakura_Blade') or \
+        bpy.data.materials.new('MAT_Senbonzakura_Blade')
+    mat.use_nodes = True
+    mat.surface_render_method = 'DITHERED'
+    nt = mat.node_tree
+    nt.nodes.clear()
+    out = nt.nodes.new('ShaderNodeOutputMaterial'); out.location = (600, 0)
+    bsdf = nt.nodes.new('ShaderNodeBsdfPrincipled'); bsdf.location = (320, 0)
+    nt.links.new(bsdf.outputs['BSDF'], out.inputs['Surface'])
+
+    bsdf.inputs['Base Color'].default_value = C_BLADE_BODY
+    bsdf.inputs['Metallic'].default_value = 0.72
+    bsdf.inputs['Roughness'].default_value = 0.17
+
+    # Fresnel-driven edge light: gives the blades the luminous silhouette they
+    # have in the Bankai shot without needing an HDRI.
+    lw = nt.nodes.new('ShaderNodeLayerWeight'); lw.location = (-700, 240)
+    lw.inputs['Blend'].default_value = 0.38
+    fres = nt.nodes.new('ShaderNodeMath'); fres.operation = 'POWER'
+    fres.inputs[1].default_value = 2.2; fres.location = (-500, 240)
+    nt.links.new(lw.outputs['Fresnel'], fres.inputs[0])
+    fres2 = nt.nodes.new('ShaderNodeMath'); fres2.operation = 'MULTIPLY_ADD'
+    fres2.inputs[1].default_value = 6.0     # bright glowing edge
+    fres2.inputs[2].default_value = 0.55    # body never goes fully dark
+    fres2.location = (-320, 240)
+    nt.links.new(fres.outputs[0], fres2.inputs[0])
+
+    # Hot band trailing the erosion front.
+    glow = nt.nodes.new('ShaderNodeAttribute')
+    glow.attribute_name = 'diss_glow'; glow.location = (-700, -80)
+    gp = nt.nodes.new('ShaderNodeMath'); gp.operation = 'POWER'
+    gp.inputs[1].default_value = 1.8; gp.location = (-500, -80)
+    nt.links.new(glow.outputs['Fac'], gp.inputs[0])
+    gm = nt.nodes.new('ShaderNodeMath'); gm.operation = 'MULTIPLY'
+    gm.inputs[1].default_value = 3.0; gm.location = (-320, -80)
+    nt.links.new(gp.outputs[0], gm.inputs[0])
+
+    total = nt.nodes.new('ShaderNodeMath'); total.operation = 'ADD'; total.location = (-120, 120)
+    nt.links.new(fres2.outputs[0], total.inputs[0])
+    nt.links.new(gm.outputs[0], total.inputs[1])
+    nt.links.new(total.outputs[0], bsdf.inputs['Emission Strength'])
+
+    ecol = nt.nodes.new('ShaderNodeMix'); ecol.data_type = 'RGBA'; ecol.location = (-120, -120)
+    ecol.inputs[6].default_value = C_BLADE_GLOW
+    ecol.inputs[7].default_value = C_PETAL_FILL
+    nt.links.new(gp.outputs[0], ecol.inputs[0])
+    nt.links.new(ecol.outputs[2], bsdf.inputs['Emission Color'])
+    return mat
+
+
+def make_veil_material():
+    mat = bpy.data.materials.get('MAT_Petal_Haze') or bpy.data.materials.new('MAT_Petal_Haze')
+    mat.use_nodes = True
+    mat.surface_render_method = 'BLENDED'
+    mat.use_backface_culling = False
+    nt = mat.node_tree
+    nt.nodes.clear()
+    out = nt.nodes.new('ShaderNodeOutputMaterial'); out.location = (600, 0)
+    mix = nt.nodes.new('ShaderNodeMixShader'); mix.location = (400, 0)
+    tr = nt.nodes.new('ShaderNodeBsdfTransparent'); tr.location = (200, 120)
+    em = nt.nodes.new('ShaderNodeEmission'); em.location = (200, -80)
+    em.inputs['Color'].default_value = C_PETAL_GLOW
+    em.inputs['Strength'].default_value = 1.15
+    nt.links.new(tr.outputs[0], mix.inputs[1])
+    nt.links.new(em.outputs[0], mix.inputs[2])
+    nt.links.new(mix.outputs[0], out.inputs['Surface'])
+
+    # radial falloff so it reads as petal haze, not a flat card
+    tc = nt.nodes.new('ShaderNodeTexCoord'); tc.location = (-800, -200)
+    sub = nt.nodes.new('ShaderNodeVectorMath'); sub.operation = 'SUBTRACT'
+    sub.inputs[1].default_value = (0.5, 0.5, 0.5); sub.location = (-620, -200)
+    nt.links.new(tc.outputs['Generated'], sub.inputs[0])
+    ln = nt.nodes.new('ShaderNodeVectorMath'); ln.operation = 'LENGTH'; ln.location = (-440, -200)
+    nt.links.new(sub.outputs['Vector'], ln.inputs[0])
+    mr = nt.nodes.new('ShaderNodeMapRange'); mr.location = (-260, -200)
+    mr.inputs['From Min'].default_value = 0.0
+    mr.inputs['From Max'].default_value = 0.72
+    mr.inputs['To Min'].default_value = 1.0
+    mr.inputs['To Max'].default_value = 0.35
+    mr.clamp = True
+    nt.links.new(ln.outputs['Value'], mr.inputs['Value'])
+
+    amount = nt.nodes.new('ShaderNodeValue'); amount.location = (-440, 120)
+    amount.name = 'HAZE_AMOUNT'
+    amount.label = 'Haze amount (keyframed)'
+    amount.outputs[0].default_value = 0.0
+    fac = nt.nodes.new('ShaderNodeMath'); fac.operation = 'MULTIPLY'
+    fac.use_clamp = True; fac.location = (-60, 0)
+    nt.links.new(amount.outputs[0], fac.inputs[0])
+    nt.links.new(mr.outputs['Result'], fac.inputs[1])
+    nt.links.new(fac.outputs[0], mix.inputs['Fac'])
+
+    # The engulfment window. Peaks exactly on the storyboard's cut point.
+    for frame, value in ((49, 0.0), (52, 0.26), (55, 0.50),
+                         (60, 0.55), (63, 0.18), (65, 0.0)):
+        amount.outputs[0].default_value = value
+        amount.outputs[0].keyframe_insert('default_value', frame=frame)
+    return mat
+
+
+# ============================================================================
+# Camera, lights, haze card
+# ============================================================================
 
 def make_camera(scene):
-    cam_data = bpy.data.cameras.get('Camera_Senbonzakura') or bpy.data.cameras.new('Camera_Senbonzakura')
-    cam = bpy.data.objects.get('Camera_Senbonzakura') or bpy.data.objects.new('Camera_Senbonzakura', cam_data)
+    data = bpy.data.cameras.get('Camera_Senbonzakura') or \
+        bpy.data.cameras.new('Camera_Senbonzakura')
+    cam = bpy.data.objects.get('Camera_Senbonzakura') or \
+        bpy.data.objects.new('Camera_Senbonzakura', data)
     if not cam.users_collection:
         scene.collection.objects.link(cam)
-    cam.location = (0, 0, 20)
-    cam.rotation_euler = (0, 0, 0)
-    cam.data.type = 'PERSP'
-    cam.data.lens = 50
-    cam.data.clip_start = 0.1
-    cam.data.clip_end = 100.0
+    cam.location = (0.0, 0.0, CAM_Z)
+    cam.rotation_euler = (0.0, 0.0, 0.0)
+    data.type = 'PERSP'
+    data.lens = LENS
+    data.sensor_width = SENSOR
+    data.clip_start = 0.05
+    data.clip_end = 200.0
     scene.camera = cam
     return cam
 
 
-def make_lights(scene):
-    for name in ('Light_Sakura_Key', 'Light_Sakura_Rim'):
+def make_lights(col):
+    for name in ('Light_Key_Sakura', 'Light_Rim_Cold', 'Light_Fill_Warm',
+                 'Light_Sakura_Key', 'Light_Sakura_Rim'):
         old = bpy.data.objects.get(name)
         if old:
             bpy.data.objects.remove(old, do_unlink=True)
-    def area(name, loc, energy, color, size):
-        data = bpy.data.lights.new(name, 'AREA'); data.energy = energy; data.color = color; data.shape = 'DISK'; data.size = size
-        obj = bpy.data.objects.new(name, data); scene.collection.objects.link(obj); obj.location = loc
-        obj.rotation_euler = (0, 0, 0)
+
+    def area(name, loc, rot, energy, color, size):
+        data = bpy.data.lights.new(name, 'AREA')
+        data.energy = energy
+        data.color = color
+        data.shape = 'DISK'
+        data.size = size
+        data.use_shadow = False          # flat anime-style petal lighting
+        obj = bpy.data.objects.new(name, data)
+        col.objects.link(obj)
+        obj.location = loc
+        obj.rotation_euler = rot
         return obj
-    area('Light_Sakura_Key', (-5, 4, 8), 900, (1.0, 0.28, 0.52), 7.0)
-    area('Light_Sakura_Rim', (5, -1, 6), 1100, (0.22, 0.34, 1.0), 5.0)
+
+    # Deliberately gentle: the petals carry their own emission, and hot lights
+    # were desaturating them straight to white.
+    area('Light_Key_Sakura', (-9.0, 7.0, 16.0), (0.5, -0.45, 0.0), 850,
+         (1.0, 0.52, 0.70), 12.0)
+    area('Light_Rim_Cold', (11.0, -4.0, 10.0), (-0.4, 0.7, 0.0), 620,
+         (0.45, 0.58, 1.0), 9.0)
+    area('Light_Fill_Warm', (0.0, 0.0, -14.0), (math.pi, 0.0, 0.0), 320,
+         (1.0, 0.45, 0.68), 16.0)
 
 
-def make_backdrop(collection):
-    old = bpy.data.objects.get('Preview_Backdrop_DARK')
-    if old:
-        bpy.data.objects.remove(old, do_unlink=True)
-    bpy.ops.mesh.primitive_plane_add(size=2, location=(0, 0, -6))
-    obj = bpy.context.object; obj.name = 'Preview_Backdrop_DARK'; link_only(obj, collection)
-    obj.scale = (12, 7, 1); obj.data.materials.append(make_dark_material())
-    obj['README'] = 'Preview only. Disable this collection before transparent compositing if you want alpha over Resolve footage.'
+def make_haze_card(col, cam):
+    """Fills the gaps between the big foreground petals during the engulfment so
+    the alpha genuinely reaches full coverage at the cut point. Sits behind the
+    whole near wave. Delete or mute this object if you'd rather do the flash in
+    Resolve."""
+    z = 12.5
+    hw, hh = half_w(z) * 1.20, half_h(z) * 1.20
+    verts = [(-hw, -hh, 0.0), (hw, -hh, 0.0), (hw, hh, 0.0), (-hw, hh, 0.0)]
+    mesh = bpy.data.meshes.new('FX_Petal_Haze_MESH')
+    mesh.from_pydata(verts, [], [(0, 1, 2, 3)])
+    mesh.update()
+    obj = bpy.data.objects.new('FX_Petal_Haze', mesh)
+    obj.location = (0.0, 0.0, z)
+    obj.data.materials.append(make_veil_material())
+    obj['README'] = ('Soft pink haze card behind the foreground petals. Its alpha '
+                     'is keyframed 48-65 to guarantee full-frame coverage at the '
+                     'transition point.')
+    col.objects.link(obj)
     return obj
 
 
-def make_readme():
-    text = bpy.data.texts.get('README_Senbonzakura') or bpy.data.texts.new('README_Senbonzakura')
+# ============================================================================
+# README text block
+# ============================================================================
+
+def make_readme(counts):
+    text = bpy.data.texts.get('README_Senbonzakura') or \
+        bpy.data.texts.new('README_Senbonzakura')
     text.clear()
-    text.write('SENBONZAKURA PARTICLE PROTOTYPE\n\n')
-    text.write('Purpose: reusable thin blade/petal fragment and accelerating screen-sweep effect for DaVinci Resolve compositing.\n\n')
-    text.write('IMPORTANT OBJECTS\n')
-    text.write('- Senbonzakura_Fragment_SOURCE: canonical polished shard; hidden from render, instanced by all layers.\n')
-    text.write('- Senbonzakura_FAR_POINTS / MID_POINTS / FOREGROUND_POINTS: point meshes with Geometry Nodes modifiers.\n')
-    text.write('- Camera_Senbonzakura: orthographic 1920x1080 framing.\n')
-    text.write('- Preview_Backdrop_DARK: optional dark preview card; put your Resolve footage behind the alpha render later.\n\n')
-    text.write('PREVIEW\n')
-    text.write('Set the timeline to frames 1-60 and press Space. Sparse drift is frames 1-21; acceleration starts at frame 22; the screen sweep peaks around frames 38-44; fragments clear at frame 45.\n\n')
-    text.write('TUNING\n')
-    text.write('Select a *_POINTS object, open the Geometry Nodes modifier, and change Particle Count, Burst Frame, Burst Duration, Clear Frame, Drift Speed, Velocity Multiplier, Direction Bias, Swirl Strength, Start Scale, Burst Scale, or Rotation Speed.\n')
-    text.write('The point mesh stores deterministic per-particle velocity, rotation, scale, delay, and swirl attributes. No hundreds of real mesh objects are created.\n\n')
-    text.write('TRANSPARENT RENDER\n')
-    text.write('Output Properties > File Format: PNG or OpenEXR. Film > Transparent is enabled in this file. Render RGBA and import the result over the DaVinci footage. Disable or hide Preview_Backdrop_DARK if it is not wanted in the alpha.\n')
-    text.write('Use Eevee for quick previews. 1920x1080 at 24 fps is configured.\n')
+    w = text.write
+    w('SENBONZAKURA BANKAI -- VFX-ONLY LAYER\n')
+    w('=====================================\n\n')
+    w('This file renders ONLY the swords and petals on a transparent background.\n')
+    w('No Byakuya, no login UI, no environment. Composite underneath in Resolve.\n\n')
+    w('TIMELINE (24 fps, frames 1-68)\n')
+    w('   1-10  blades emerge from below frame and fan open\n')
+    w('  10-20  blades erode tip->root; petals are born on the surface the\n')
+    w('         erosion front just uncovered\n')
+    w('  20-30  coherent left->right + upward flow\n')
+    w('  30-40  swarm spreads in depth, near petals begin growing\n')
+    w('  40-50  near wave rushes the camera\n')
+    w('  50-60  full-frame coverage  <-- cut to the KDE footage here\n')
+    w('  60-65  everything exits right/up and past the camera plane\n')
+    w('  65-68  empty tail; layer is transparent again\n\n')
+    w('MEASURED ALPHA COVERAGE (fraction of frame the layer covers)\n')
+    w('  f044 .54  f048 .93  f050 .99  f053 .99  f055 .997\n')
+    w('  f057 .996 f059 .999 f060 1.00 f062 .75  f064 .15  f067 .00\n')
+    w('  Frame 60 is the only frame that is 100.0% opaque with zero gaps, so\n')
+    w('  that is the safest single frame to cut on. 53-60 are all >=99%.\n\n')
+    w('OBJECTS\n')
+    w('  Senbonzakura_Swords   all blades in one mesh + the emerge/erode nodes\n')
+    w('  Petals_FAR / MID      the flowing background and midground swarm\n')
+    w('  Petals_NEAR_WAVE      the foreground petals that engulf the frame\n')
+    w('  Petals_CROSSERS       fragments that punch past the camera plane\n')
+    w('  Petal_SOURCE          the instanced sakura petal (hidden)\n')
+    w('  FX_Petal_Haze         soft pink card that seals the alpha at 53-62\n')
+    w('  Camera_Senbonzakura   50mm at +Z looking down -Z; X=right, Y=up\n\n')
+    w('COUNTS\n')
+    for name, n in counts:
+        w('  %-20s %d\n' % (name, n))
+    w('\nTUNING\n')
+    w('  Sword modifier: Emerge Height, Erosion Roughness, Front Glow Width,\n')
+    w('    Front Taper (how far back the blade necks down as it erodes --\n')
+    w('    set it to 0 to see why it exists).\n')
+    w('  Petal modifiers: Visible Count (drop it for fast previews),\n')
+    w('    Scale Multiplier, Time Offset, Wobble, Spin.\n')
+    w('  Anything structural -- formation, destinations, timing -- lives in\n')
+    w('  build_senbonzakura.py. Edit the numbers there and re-run:\n')
+    w('    blender -b senbonzakura_prototype.blend --python build_senbonzakura.py\n\n')
+    w('COMPOSITING\n')
+    w('  Film > Transparent is on; output is PNG RGBA (straight alpha).\n')
+    w('  Switch Output to OpenEXR (half, RGBA) if you want the emission above\n')
+    w('  1.0 preserved for a Glow node in Resolve -- the petals and the erosion\n')
+    w('  front are deliberately over-bright for that.\n')
+    w('  No bloom is baked in on purpose: it would spill colour into transparent\n')
+    w('  pixels and dirty the alpha. Add Glow in Resolve instead.\n')
     return text
 
 
+# ============================================================================
+# Main
+# ============================================================================
+
 def main():
     scene = bpy.context.scene
+    wipe_previous_build()
+
+    src_col = collection('SOURCE_Geometry')
+    sword_col = collection('SWORDS')
+    petal_col = collection('PETALS')
+    fx_col = collection('FX_Optional')
+    rig_col = collection('RIG')
+
+    # --- sources ---
+    petal_src = build_petal_mesh()
+    src_col.objects.link(petal_src)
+    petal_src.hide_render = True
+    petal_src.hide_viewport = True
+
+    # --- swords ---
+    swords = layout_swords()
+    sword_obj = build_swords_mesh(swords)
+    sword_col.objects.link(sword_obj)
+    sword_ng = make_sword_nodes('GN_Senbonzakura_Swords')
+    mod = sword_obj.modifiers.new('Emerge + erode (Geometry Nodes)', 'NODES')
+    mod.node_group = sword_ng
+
+    # --- petals ---
+    petal_ng = make_petal_nodes('GN_Senbonzakura_Petals', petal_src)
+    layers = [
+        ('Petals_FAR', 900, spec_far(), 101),
+        ('Petals_MID', 620, spec_mid(), 202),
+        # Four staggered depths so coverage builds through 46-52, holds solid
+        # through 53-60, then unloads. Grid is 10x7 per wave.
+        ('Petals_NEAR_WAVE', 420, spec_near(
+            [(9.5, 47.5, 51.5), (11.5, 50.0, 54.0),
+             (13.0, 52.5, 56.5), (14.2, 55.0, 59.5)], 10, 7), 303),
+        ('Petals_CROSSERS', 80, spec_crossers(), 404),
+    ]
+    counts = []
+    for name, count, spec, seed in layers:
+        obj = bake_petal_layer(name, swords, count, spec, seed)
+        petal_col.objects.link(obj)
+        m = obj.modifiers.new('Senbonzakura petals (Geometry Nodes)', 'NODES')
+        m.node_group = petal_ng
+        counts.append((name, count))
+    counts.append(('swords', len(swords)))
+
+    # --- camera, lights, haze ---
+    cam = make_camera(scene)
+    make_lights(rig_col)
+    make_haze_card(fx_col, cam)
+
+    # --- render settings ---
     scene.render.engine = 'BLENDER_EEVEE'
-    scene.render.resolution_x = 1920
-    scene.render.resolution_y = 1080
+    scene.render.resolution_x = RES_X
+    scene.render.resolution_y = RES_Y
     scene.render.resolution_percentage = 100
+    scene.render.fps = 24
+    scene.frame_start = FRAME_START
+    scene.frame_end = FRAME_END
+    scene.render.film_transparent = True
     scene.render.image_settings.file_format = 'PNG'
     scene.render.image_settings.color_mode = 'RGBA'
-    scene.render.fps = 24
-    scene.frame_start = 1
-    scene.frame_end = 60
-    scene.render.film_transparent = True
+    scene.render.image_settings.color_depth = '8'
     scene.render.use_file_extension = True
     scene.render.filepath = ROOT + 'renders/senbonzakura_####.png'
-    scene.world.color = (0.001, 0.002, 0.008)
+    scene.render.use_motion_blur = True
+    if hasattr(scene.render, 'motion_blur_shutter'):
+        scene.render.motion_blur_shutter = 0.32
+    scene.eevee.taa_render_samples = 64
+    if scene.world is None:
+        scene.world = bpy.data.worlds.new('World_Senbonzakura')
+    scene.world.use_nodes = True
+    bg = scene.world.node_tree.nodes.get('Background')
+    if bg:
+        bg.inputs['Color'].default_value = (0.055, 0.028, 0.045, 1.0)
+        bg.inputs['Strength'].default_value = 1.0
 
-    # Preserve the user's original prototype for comparison, but keep it out of the new render.
-    ref_col = get_or_create_collection('REFERENCE_Original_Prototype')
-    old_plane = bpy.data.objects.get('Plane')
-    if old_plane:
-        old_plane.name = 'Plane_BeginnerPrototype_REFERENCE'
-        link_only(old_plane, ref_col)
-        old_plane.hide_render = True
-        old_plane.hide_set(True)
-    ref_col.hide_render = True
-    ref_col.hide_viewport = True
-
-    source_col = get_or_create_collection('SOURCE_Fragment')
-    particle_col = get_or_create_collection('PARTICLES_GeometryNodes')
-    preview_col = get_or_create_collection('PREVIEW_Optional')
-    source = make_fragment(source_col)
-    for obj in list(particle_col.objects):
-        bpy.data.objects.remove(obj, do_unlink=True)
-    add_layer(particle_col, source, 'Senbonzakura_FAR', 300, 11, 'FAR', 1.0, 0.85)
-    add_layer(particle_col, source, 'Senbonzakura_MID', 440, 37, 'MID', 1.0, 1.10)
-    add_layer(particle_col, source, 'Senbonzakura_FOREGROUND', 150, 71, 'FOREGROUND', 1.0, 1.55)
-    make_camera(scene)
-    make_lights(scene)
-    make_backdrop(preview_col)
-    make_readme()
-    preview_col.hide_render = True
+    make_readme(counts)
     scene.frame_set(1)
     bpy.ops.wm.save_as_mainfile(filepath=OUT_FILE)
     print('Saved', OUT_FILE)
+    print('Swords:', len(swords), 'Petal layers:', counts)
 
 
 if __name__ == '__main__':
