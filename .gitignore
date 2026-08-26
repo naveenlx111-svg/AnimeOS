@@ -5,3 +5,7 @@
 
 # Render output
 Initial_render/renders/
+
+# Python bytecode
+__pycache__/
+*.pyc

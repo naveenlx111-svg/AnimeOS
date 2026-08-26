@@ -32,7 +32,7 @@ and it stays editable: re-run this script with different numbers, or grab the
 import bpy
 import math
 import random
-from mathutils import Euler, Vector
+from mathutils import Euler, Matrix, Vector
 
 ROOT = bpy.path.abspath('//')
 OUT_FILE = ROOT + 'senbonzakura_prototype.blend'
@@ -52,7 +52,13 @@ FRAME_START, FRAME_END = 1, 68
 # Invisible composition anchor: where Byakuya will sit in the Resolve comp.
 # Nothing is rendered here -- it only biases where blades are NOT placed and
 # which region the swarm has to travel through.
-ANCHOR_NDC = (-0.05, -0.15)
+# Byakuya stands dead centre, low in frame, in every Swords_rising plate.
+# The blade formation is built around this.
+ANCHOR_NDC = (0.0, -0.62)
+
+# The swarm orbits higher than the character does. Orbiting ANCHOR itself
+# pins every petal to the bottom of the frame and leaves the top empty.
+SWARM_CENTER_NDC = (0.0, -0.12)
 
 # Palette from the petal reference sheet. Blender shader inputs are LINEAR, so
 # the sRGB hex values have to be converted or the petals come out chalky white.
@@ -68,8 +74,10 @@ C_PETAL_FILL = srgb('#FF9FC5')
 C_PETAL_HILT = srgb('#FFEAF4')
 C_PETAL_GLOW = srgb('#FF4F9F')
 C_PETAL_DEEP = srgb('#D82D7F')   # saturated core so lit petals stay pink
-C_BLADE_BODY = srgb('#B9C9DC')
-C_BLADE_GLOW = srgb('#DCEBFF')
+C_BLADE_BODY = srgb('#39424F')   # near-black body; the read is all edge light
+C_BLADE_GLOW = srgb('#EAF4FF')
+C_EMBER_HOT = srgb('#FFFFFF')    # white-hot core of the transformation plume
+C_EMBER_COOL = srgb('#FF3D96')
 
 
 def half_w(z):
@@ -191,64 +199,137 @@ def build_petal_mesh():
 
 # Blade profile shared by the mesh builder and the petal birth-point sampler,
 # so petals are always born exactly on the sword surface.
-SWORD_W = 0.080
+# ----------------------------------------------------------------------------
+# Blade formation, read off Swords_rising/.
+#
+# The reference is NOT a radial fan of straight blades. It is two mirrored
+# wings of *hooked* blades: each one leaves the pivot below Byakuya angled
+# outward, then curves back inward as it rises, so the tips lean toward the
+# centre line and form the signature V notch above his head. Blades nest
+# inside each other, getting longer and more swept toward the outside.
+#
+# Screen units below: 1.0 == half the frame HEIGHT, so the visible frame is
+# y in -1..1 and x in about -1.78..1.78. Working in these units keeps the
+# on-screen formation identical no matter what depth a blade sits at.
+# ----------------------------------------------------------------------------
+BLADES_PER_WING = 22
+BLADE_W = 0.036             # half-width at the root, screen units
+
+#                 innermost, outermost
+TH_ROOT = (16.0, 52.0)      # launch angle from vertical, degrees, outward
+TH_BEND = (-18.0, -34.0)    # total turn along the blade; negative hooks it in
+BLADE_LEN = (1.15, 3.45)
+# Roots fan across a wide base well below frame, so the outer blades sweep in
+# from the bottom corners and exit past the top -- as they do in the reference.
+ROOT_SX = (0.05, 1.30)
+ROOT_SY = (-1.30, -1.60)
+BLADE_Z = (-1.5, -6.5)      # inner blades nearer the lens -> real parallax
+
+BLADE_SECTIONS = 57         # erosion deletes whole faces, so keep this fine
 
 
-def sword_half_width(t):
-    return SWORD_W * (1.0 - t ** 2.4) ** 0.55
+def _lerp(pair, u, power=1.0):
+    return pair[0] + (pair[1] - pair[0]) * (u ** power)
 
 
-def sword_local(t, u):
-    """Point on the blade surface in blade-local space (length along +Y, 1 unit
-    long). `u` in -1..1 runs across the width."""
-    w = sword_half_width(t)
-    cx = 0.030 * math.sin(t * math.pi * 0.85)
-    x = cx + u * w
-    z = 0.011 * (1.0 - abs(u) ** 1.7) * (1.0 - t * 0.6)
-    return Vector((x, t, z))
+def blade_half_width(t):
+    """Width profile from root (t=0) to tip (t=1): near-constant, then a long
+    taper to a fine kissaki point."""
+    return (1.0 - t ** 2.2) ** 0.45
+
+
+def blade_centerline(side, u, samples):
+    """Sample one blade's centreline as a constant-curvature arc.
+
+    The blade leaves its root at TH_ROOT degrees from vertical and turns by
+    TH_BEND over its length. That single arc is what gives the reference its
+    hooked silhouette -- a straight blade plus a rotation cannot reproduce it.
+    """
+    th0 = math.radians(_lerp(TH_ROOT, u, 0.9))
+    bend = math.radians(_lerp(TH_BEND, u))
+    length = _lerp(BLADE_LEN, u)
+    rx = _lerp(ROOT_SX, u, 1.2)
+    ry = _lerp(ROOT_SY, u)
+    z = _lerp(BLADE_Z, u)
+
+    pts = []
+    for k in range(samples):
+        s = k / (samples - 1)
+        if abs(bend) < 1e-6:
+            dx, dy = math.sin(th0) * s, math.cos(th0) * s
+        else:
+            # closed form of the arc integral
+            dx = (math.cos(th0) - math.cos(th0 + bend * s)) / bend
+            dy = (math.sin(th0 + bend * s) - math.sin(th0)) / bend
+        sx = side * (rx + length * dx)
+        sy = ry + length * dy
+        pts.append(ndc_to_world(sx * ASPECT, sy, z))
+    return pts, z
+
+
+def blade_frames(pts):
+    """Per-sample orthonormal frame: tangent along the blade, width direction
+    across it in the screen plane, normal through its thickness."""
+    frames = []
+    n = len(pts)
+    for k in range(n):
+        if k == 0:
+            tan = pts[1] - pts[0]
+        elif k == n - 1:
+            tan = pts[-1] - pts[-2]
+        else:
+            tan = pts[k + 1] - pts[k - 1]
+        tan = tan.normalized()
+        wdir = Vector((-tan.y, tan.x, 0.0))
+        wdir = wdir.normalized() if wdir.length > 1e-6 else Vector((1.0, 0.0, 0.0))
+        frames.append((tan, wdir, Vector((0.0, 0.0, 1.0))))
+    return frames
+
+
+def blade_basis(tan, wdir, ndir):
+    """Rotation matrix whose columns are the blade's local axes, so callers can
+    take .to_euler() for petal birth orientation."""
+    return Matrix(((wdir.x, tan.x, ndir.x),
+                   (wdir.y, tan.y, ndir.y),
+                   (wdir.z, tan.z, ndir.z)))
 
 
 def build_swords_mesh(swords):
     """All blades baked into ONE mesh in world space, carrying the per-vertex
     attributes the geometry nodes tree needs. No instancing -- that keeps the
     erosion (which deletes real faces) trivial and attribute-safe."""
-    # Lots of sections along the length: the erosion deletes whole faces, so
-    # face size is what limits how ragged the dissolve front can look.
-    sections, across = 44, 5
+    across = 5
     verts, faces = [], []
-    a_u, a_axis, a_len, a_delay, a_edur, a_dt0, a_ddur, a_rest = [], [], [], [], [], [], [], []
-    a_to_center = []
+    a_u, a_len, a_delay, a_edur, a_dt0, a_ddur, a_rest = [], [], [], [], [], [], []
+    a_to_center, a_bright = [], []
 
     for sw in swords:
-        rot = Euler(sw['rot'], 'XYZ').to_matrix()
-        axis = (rot @ Vector((0.0, 1.0, 0.0))).normalized()
-        base = Vector(sw['root'])
-        scale = Vector((sw['wid'], sw['len'], sw['wid']))
-
-        def place(t, u):
-            p = sword_local(t, u)
-            p = Vector((p.x * scale.x, p.y * scale.y, p.z * scale.z))
-            return base + rot @ p
+        pts = sw['pts']
+        frames = blade_frames(pts)
+        sections = len(pts)
 
         top_idx, bot_idx = [], []
         for i in range(sections):
             t = i / (sections - 1)
+            centre = pts[i]
+            tan, wdir, ndir = frames[i]
+            hw = sw['width'] * blade_half_width(t)
+            th = sw['width'] * 0.18 * (1.0 - 0.6 * t)
             trow, brow = [], []
             for j in range(across):
                 u = j / (across - 1) * 2.0 - 1.0
-                p = place(t, u)
-                centre = place(t, 0.0)
-                n = rot @ Vector((0.0, 0.0, 1.0))
+                p = centre + wdir * (u * hw)
+                ridge = ndir * (th * (1.0 - abs(u) ** 1.7))
                 for side, store in ((1.0, trow), (-1.0, brow)):
                     store.append(len(verts))
-                    vp = p + n * (side * 0.010 * sw['wid'])
+                    vp = p + ridge * side
                     verts.append(tuple(vp))
-                    # Translation-invariant, so it stays correct after the blade
-                    # has been slid up out of the ground.
+                    # Translation-invariant, so it stays correct however the
+                    # blade is displaced at render time.
                     a_to_center.append(tuple(centre - vp))
                     a_u.append(t)
-                    a_axis.append(tuple(axis))
-                    a_len.append(sw['len'])
+                    a_bright.append(sw['bright'])
+                    a_len.append(sw['length'])
                     a_delay.append(sw['delay'])
                     a_edur.append(sw['edur'])
                     a_dt0.append(sw['dt0'])
@@ -287,7 +368,7 @@ def build_swords_mesh(swords):
                 at.data[i].vector = v
 
     store('blade_u', 'FLOAT', a_u)
-    store('sw_axis', 'FLOAT_VECTOR', a_axis)
+    store('sw_bright', 'FLOAT', a_bright)
     store('sw_len', 'FLOAT', a_len)
     store('sw_delay', 'FLOAT', a_delay)
     store('sw_edur', 'FLOAT', a_edur)
@@ -308,55 +389,61 @@ def build_swords_mesh(swords):
 # ============================================================================
 
 def layout_swords():
-    """Authoritative 24-blade mirrored fan from ``Swords_rising``.
+    """Deterministic 32-blade mirrored wing matching ``Swords_rising``.
 
-    The reference is a nested, symmetric formation: the center pair is short,
-    the blades get progressively longer toward the outside, and every blade
-    shares the same ground line.  Keep the table deterministic so the VFX can
-    be registered against the Byakuya plate in Resolve.
+    Fully determined by the constants above -- no RNG anywhere -- so the
+    formation can be registered against the Byakuya plate in Resolve and stays
+    byte-identical across rebuilds. Inner blades launch first and the wing
+    unfurls outward, which is the progression the reference shows.
     """
-    # NDC x positions measured from the final reference plate.  The center gap
-    # is intentional: Byakuya remains visible between the two inner blades.
-    x_abs = (0.14, 0.22, 0.31, 0.41, 0.52, 0.64,
-             0.78, 0.93, 1.09, 1.25, 1.40, 1.53)
-    lengths = (9.2, 10.0, 10.8, 11.8, 12.9, 14.0,
-               15.1, 16.2, 17.2, 18.1, 18.9, 19.5)
-    widths = (1.02, 1.06, 1.10, 1.14, 1.18, 1.22,
-              1.27, 1.32, 1.38, 1.44, 1.50, 1.56)
     swords = []
     for side in (-1, 1):
-        for i, (ax, length, width) in enumerate(zip(x_abs, lengths, widths)):
-            nx = ANCHOR_NDC[0] + side * ax
-            # Outer swords sit slightly farther back, producing the same
-            # perspective compression as the reference without random rows.
-            z = -2.6 - 0.48 * i
-            root = ndc_to_world(nx, -1.28, z)
-            lean = -side * (0.08 + 0.060 * i)
+        for i in range(BLADES_PER_WING):
+            u = i / (BLADES_PER_WING - 1)
+            pts, z = blade_centerline(side, u, BLADE_SECTIONS)
+            length = (pts[-1] - pts[0]).length
             swords.append({
-                'root': tuple(root),
-                'rot': (0.0, 0.0, lean),
-                'len': length,
-                'wid': width,
+                'pts': pts,
                 'z': z,
-                'delay': 1.2 + i * 0.48,
-                'edur': 5.6,
-                'dt0': 10.4 + i * 0.34,
-                'ddur': 7.2,
-                'row': 0,
-                'index': side * (i + 1),
+                'side': side,
+                'index': i,
+                'length': length,
+                # Outer blades are physically bigger but read as thinner
+                # on screen, exactly as in the reference.
+                'width': BLADE_W * half_h(z) * (1.0 - 0.25 * u),
+                # Outer blades are farther away, so knock them back tonally.
+                # Without this the wing reads as one flat white comb rather
+                # than a formation with depth.
+                'bright': 1.0 - 0.40 * u ** 0.8,
+                # Inner blades lead; the wing unfurls outward over ~9 frames.
+                'delay': 0.5 + i * 0.34,
+                'edur': 4.6,
+                'dt0': 10.4 + i * 0.22,
+                'ddur': 7.0,
             })
     return swords
 
 
 def sword_surface_point(sw, t, u, jitter_rng):
-    rot = Euler(sw['rot'], 'XYZ').to_matrix()
-    p = sword_local(t, u)
-    p = Vector((p.x * sw['wid'], p.y * sw['len'], p.z * sw['wid']))
-    world = Vector(sw['root']) + rot @ p
-    world += Vector((jitter_rng.uniform(-0.05, 0.05),
-                     jitter_rng.uniform(-0.05, 0.05),
-                     jitter_rng.uniform(-0.05, 0.05)))
-    return world, rot
+    """Point on the curved blade surface at length fraction `t`, width `u`.
+    Shares the centreline with the mesh builder, so petals are always born
+    exactly on the blade."""
+    pts = sw['pts']
+    n = len(pts)
+    f = min(t, 0.99999) * (n - 1)
+    k = int(f)
+    frac = f - k
+    centre = pts[k].lerp(pts[k + 1], frac)
+    tan = (pts[k + 1] - pts[k]).normalized()
+    wdir = Vector((-tan.y, tan.x, 0.0))
+    wdir = wdir.normalized() if wdir.length > 1e-6 else Vector((1.0, 0.0, 0.0))
+    ndir = Vector((0.0, 0.0, 1.0))
+    hw = sw['width'] * blade_half_width(t)
+    world = centre + wdir * (u * hw)
+    j = sw['width'] * 0.4
+    world += Vector((jitter_rng.uniform(-j, j), jitter_rng.uniform(-j, j),
+                     jitter_rng.uniform(-j, j)))
+    return world, blade_basis(tan, wdir, ndir)
 
 
 # ============================================================================
@@ -368,7 +455,7 @@ def bake_petal_layer(name, swords, count, spec, seed):
     it, then flies a quadratic bezier to a destination expressed in camera NDC.
     All of that is baked into point attributes here."""
     rng = random.Random(seed)
-    weights = [sw['len'] for sw in swords]
+    weights = [sw['length'] for sw in swords]
     total = sum(weights)
 
     pos, ctrl, end, exitv, wob = [], [], [], [], []
@@ -395,13 +482,19 @@ def bake_petal_layer(name, swords, count, spec, seed):
         tb = sw['dt0'] + (1.0 - t) * sw['ddur'] + rng.uniform(0.0, 0.8)
 
         if spec.get('dest_accepts_t'):
-            dest = spec['dest'](rng, sw, i, count, t, birth)
+            dest = spec['dest'](rng, sw, i, count, t, birth, rot)
         else:
             dest = spec['dest'](rng, sw, i, count)
         nx, ny, z_end, arrive, size = dest
         e = ndc_to_world(nx, ny, z_end)
 
-        life = max(4.0, arrive - tb)
+        if spec.get('absolute_arrive', True):
+            life = max(4.0, arrive - tb)
+            arrive = tb + life
+        else:
+            # `arrive` came back as a lifetime relative to this petal's birth.
+            life = max(2.0, arrive)
+            arrive = tb + life
         bias = spec['ctrl_bias']
         c = Vector((
             birth.x + (e.x - birth.x) * (bias[0] + rng.uniform(-0.08, 0.08)),
@@ -411,7 +504,7 @@ def bake_petal_layer(name, swords, count, spec, seed):
         if spec.get('swirl'):
             # Add a tangent component so the bezier bends around the invisible
             # Byakuya anchor instead of reading as a straight particle stream.
-            center = ndc_to_world(ANCHOR_NDC[0], ANCHOR_NDC[1], birth.z)
+            center = ndc_to_world(SWARM_CENTER_NDC[0], SWARM_CENTER_NDC[1], birth.z)
             radial = birth - center
             radial.z = 0.0
             if radial.length < 1e-4:
@@ -497,8 +590,8 @@ def spec_far():
     def dest(rng, sw, i, count):
         theta = (i / max(1, count)) * math.tau * 2.15 + rng.uniform(-0.12, 0.12)
         radius = rng.uniform(0.38, 1.18)
-        nx = ANCHOR_NDC[0] + math.cos(theta) * radius * 1.12
-        ny = ANCHOR_NDC[1] + math.sin(theta) * radius * 0.74
+        nx = SWARM_CENTER_NDC[0] + math.cos(theta) * radius * 1.20
+        ny = SWARM_CENTER_NDC[1] + math.sin(theta) * radius * 0.95
         z = rng.uniform(-13.0, -3.0)
         arrive = rng.uniform(27.0, 45.0)
         size = rng.uniform(0.12, 0.30)
@@ -508,7 +601,7 @@ def spec_far():
         'ctrl_bias': (0.44, 0.36, 0.50),
         'swirl': lambda r: r.uniform(1.0, 2.2),
         'exit_speed': lambda r: r.uniform(0.30, 0.60),
-        'start_scale': lambda r: r.uniform(0.45, 0.75),
+        'start_scale': lambda r: r.uniform(0.34, 0.52),
         'grow': lambda r: 0.0,
         'ease': lambda r: r.uniform(1.15, 1.45),
         'wobble': lambda r: r.uniform(0.06, 0.22),
@@ -520,8 +613,8 @@ def spec_mid():
     def dest(rng, sw, i, count):
         theta = (i / max(1, count)) * math.tau * 2.7 + rng.uniform(-0.16, 0.16)
         radius = rng.uniform(0.20, 1.02)
-        nx = ANCHOR_NDC[0] + math.cos(theta) * radius * 1.20
-        ny = ANCHOR_NDC[1] + math.sin(theta) * radius * 0.82
+        nx = SWARM_CENTER_NDC[0] + math.cos(theta) * radius * 1.28
+        ny = SWARM_CENTER_NDC[1] + math.sin(theta) * radius * 1.00
         z = rng.uniform(-2.0, 8.0)
         arrive = rng.uniform(31.0, 50.0)
         size = rng.uniform(0.24, 0.66)
@@ -531,7 +624,7 @@ def spec_mid():
         'ctrl_bias': (0.42, 0.34, 0.42),
         'swirl': lambda r: r.uniform(0.8, 1.8),
         'exit_speed': lambda r: r.uniform(0.45, 0.85),
-        'start_scale': lambda r: r.uniform(0.40, 0.70),
+        'start_scale': lambda r: r.uniform(0.34, 0.52),
         'grow': lambda r: r.uniform(0.0, 0.02),
         'ease': lambda r: r.uniform(1.25, 1.60),
         'wobble': lambda r: r.uniform(0.05, 0.18),
@@ -592,9 +685,9 @@ def spec_crossers():
     def dest(rng, sw, i, count):
         nx = rng.uniform(-0.9, 0.9)
         ny = rng.uniform(-0.9, 0.9)
-        z = rng.uniform(18.2, 20.2)
+        z = rng.uniform(17.4, 19.4)
         arrive = rng.uniform(42.0, 61.0)
-        size = rng.uniform(0.22, 0.55)
+        size = rng.uniform(0.10, 0.26)
         return nx, ny, z, arrive, size
     return {
         'dest': dest,
@@ -608,38 +701,50 @@ def spec_crossers():
     }
 
 
-def spec_sword_fragments():
-    """Fragments born on the erosion front and briefly orbiting their source.
+def spec_embers():
+    """The hot plume, straight from single_sword_transform_sample/.
 
-    This layer is deliberately separate from the long-range swarm: it makes
-    the causal handoff legible in the first few frames of each sword's breakup.
+    Where the erosion front eats the blade, the reference throws a dense
+    fountain of TINY white-hot flecks that rise in a tight column along the
+    blade's own axis and mushroom outward at the top. This layer is what makes
+    the transformation read as the sword burning into petals rather than the
+    sword vanishing and a particle system switching on.
+
+    These stay small and short-ranged on purpose -- the big travelling petals
+    are separate layers that take over once the plume has cooled.
     """
-    def dest(rng, sw, i, count, t, birth):
-        rot = Euler(sw['rot'], 'XYZ').to_matrix()
-        axis = (rot @ Vector((0.0, 1.0, 0.0))).normalized()
-        side = rot @ Vector((1.0, 0.0, 0.0))
-        # Spread from the newly exposed surface, with the tip shedding first.
-        lift = (0.25 + 0.55 * t) * sw['len']
-        p = birth + axis * rng.uniform(0.20, 0.85) + side * rng.uniform(-0.55, 0.55)
-        p += Vector((rng.uniform(-0.12, 0.12), rng.uniform(-0.12, 0.12),
-                     rng.uniform(-0.08, 0.14)))
-        nx = max(-1.35, min(1.35, p.x / half_w(-3.0)))
-        ny = max(-1.25, min(1.25, p.y / half_h(-3.0)))
-        z = rng.uniform(-1.5, 4.5)
-        arrive = rng.uniform(22.0, 34.0) + (1.0 - t) * 4.0
-        size = rng.uniform(0.10, 0.24) * (0.8 + 0.5 * t)
+    def dest(rng, sw, i, count, t, birth, basis):
+        # The reference plumes rise vertically regardless of how the blade is
+        # angled, so drive them off world up, not the blade axis.
+        tan = Vector((0.0, 1.0, 0.0))
+        wdir = Vector((basis[0][0], basis[1][0], basis[2][0]))   # across width
+        scale = sw['width'] * 34.0
+        # Rise along the blade, spreading as it goes: a narrow stem that opens
+        # into a cap, exactly the plume shape in the sample frames.
+        rise = rng.uniform(0.30, 1.0) ** 0.6
+        spread = rise ** 2.6      # tight stem, wide cap
+        p = birth + tan * (rise * scale)
+        p += wdir * (rng.uniform(-1.0, 1.0) * spread * scale * 0.42)
+        p += Vector((0.0, 0.0, rng.uniform(-1.0, 1.0) * spread * scale * 0.3))
+        nx = p.x / half_w(sw['z'])
+        ny = p.y / half_h(sw['z'])
+        z = sw['z'] + rng.uniform(-0.6, 1.4)
+        arrive = rng.uniform(5.0, 11.0)      # short-lived; measured from birth
+        size = rng.uniform(0.045, 0.115)     # tiny -- these read as sparks
         return nx, ny, z, arrive, size
     return {
         'dest': dest,
         'dest_accepts_t': True,
-        'ctrl_bias': (0.28, 0.35, 0.35),
-        'swirl': lambda r: r.uniform(0.25, 0.65),
-        'exit_speed': lambda r: r.uniform(0.24, 0.46),
-        'start_scale': lambda r: r.uniform(0.18, 0.36),
-        'grow': lambda r: r.uniform(0.0, 0.02),
-        'ease': lambda r: r.uniform(1.3, 1.8),
-        'wobble': lambda r: r.uniform(0.03, 0.10),
-        'spin': lambda r: r.uniform(0.10, 0.28),
+        'absolute_arrive': False,   # `arrive` is a lifetime, not a frame number
+        'ctrl_bias': (0.30, 0.55, 0.30),
+        'exit_speed': lambda r: r.uniform(0.05, 0.16),
+        'start_scale': lambda r: r.uniform(0.55, 0.95),
+        # Negative growth: a fleck burns out a few frames after it tops out,
+        # which is what stops the plume becoming permanent white dust.
+        'grow': lambda r: -r.uniform(0.05, 0.11),
+        'ease': lambda r: r.uniform(0.55, 0.80),   # fast off the blade, then slows
+        'wobble': lambda r: r.uniform(0.02, 0.07),
+        'spin': lambda r: r.uniform(0.12, 0.34),
     }
 
 
@@ -721,9 +826,10 @@ def make_sword_nodes(name):
     ng = bpy.data.node_groups.new(name, 'GeometryNodeTree')
     ng.interface.new_socket(name='Geometry', in_out='INPUT', socket_type='NodeSocketGeometry')
     ng.interface.new_socket(name='Geometry', in_out='OUTPUT', socket_type='NodeSocketGeometry')
-    s = ng.interface.new_socket(name='Emerge Height', in_out='INPUT', socket_type='NodeSocketFloat')
-    s.default_value, s.min_value, s.max_value = 1.18, 0.0, 3.0
-    s.description = 'How far below ground each blade starts, as a fraction of its length.'
+    s = ng.interface.new_socket(name='Growth Sharpness', in_out='INPUT', socket_type='NodeSocketFloat')
+    s.default_value, s.min_value, s.max_value = 0.45, 0.05, 1.0
+    s.description = ('Ease on the blade extending out of the pivot. Lower = a '
+                     'faster initial stab that decelerates into place.')
     s = ng.interface.new_socket(name='Erosion Roughness', in_out='INPUT', socket_type='NodeSocketFloat')
     s.default_value, s.min_value, s.max_value = 0.22, 0.0, 0.6
     s.description = 'Ragged-ness of the dissolve front. 0 = perfectly straight cut.'
@@ -741,8 +847,6 @@ def make_sword_nodes(name):
 
     frame = nb.frame()
     blade_u = nb.attr('blade_u')
-    axis = nb.attr('sw_axis', 'FLOAT_VECTOR')
-    length = nb.attr('sw_len')
     delay = nb.attr('sw_delay')
     edur = nb.attr('sw_edur')
     dt0 = nb.attr('sw_dt0')
@@ -750,33 +854,39 @@ def make_sword_nodes(name):
     rest = nb.attr('rest_pos', 'FLOAT_VECTOR')
     to_center = nb.attr('to_center', 'FLOAT_VECTOR')
 
-    # --- erosion front travels tip (u=1) -> root (u=0) ---
+    # Both phases are the same operation on the same coordinate: a front that
+    # sweeps along the blade. Growth runs root -> tip, erosion runs tip -> root,
+    # and the blade is simply whatever lies behind BOTH fronts. One `min` gives
+    # the whole life of a blade, and the leading edge glows in either phase.
+
+    # --- growth: front runs 0 -> 1, decelerating ---
+    g = nb.math('SUBTRACT', frame, nb.math('ADD', delay, 1.0))
+    g = nb.math('DIVIDE', g, edur, clamp=True)
+    grow = nb.math('POWER', g, gi.outputs['Growth Sharpness'])
+
+    # --- erosion: front runs 1 -> 0 ---
     prog = nb.math('DIVIDE', nb.math('SUBTRACT', frame, dt0), ddur, clamp=True)
-    front = nb.math('SUBTRACT', 1.0, prog)
+    erode = nb.math('SUBTRACT', 1.0, prog)
+
+    front = nb.math('MINIMUM', grow, erode)
     noise = nb.new('ShaderNodeTexNoise')
     nb.plug(noise, 'Vector', nb.vmath('SCALE', rest, scale=6.0))
     nb.plug(noise, 'Scale', 1.0)
     nb.plug(noise, 'Detail', 4.0)
     jag = nb.math('MULTIPLY', nb.math('SUBTRACT', noise.outputs['Factor'], 0.5),
                   gi.outputs['Erosion Roughness'])
+    # Only roughen the erosion edge -- a growing blade has a clean sharp tip.
+    jag = nb.math('MULTIPLY', jag, prog)
     front_n = nb.math('ADD', front, jag)
 
     # distance behind the front, in blade-length units
     d = nb.math('MAXIMUM', nb.math('SUBTRACT', front_n, blade_u), 0.0)
 
-    # --- emergence: slide up along the blade's own axis, ease-out ---
-    e = nb.math('SUBTRACT', frame, nb.math('ADD', delay, 1.0))
-    e = nb.math('DIVIDE', e, edur, clamp=True)
-    inv = nb.math('SUBTRACT', 1.0, e)
-    inv3 = nb.math('POWER', inv, 3.0)                 # (1-e)^3
-    drop = nb.math('MULTIPLY', inv3, nb.math('MULTIPLY', length, gi.outputs['Emerge Height']))
-    offset = nb.vmath('SCALE', axis, scale=nb.math('MULTIPLY', drop, -1.0))
-
     # --- taper: pull the surface toward the centreline as the front approaches,
-    # so the blade erodes to a needle instead of a blunt bright stump ---
+    # so the blade ends in a needle instead of a blunt bright stump ---
     shrink = nb.math('SUBTRACT', 1.0,
                      nb.math('DIVIDE', d, gi.outputs['Front Taper'], clamp=True))
-    offset = nb.vmath('ADD', offset, nb.vmath('SCALE', to_center, scale=shrink))
+    offset = nb.vmath('SCALE', to_center, scale=shrink)
 
     setpos = nb.new('GeometryNodeSetPosition')
     nb.plug(setpos, 'Geometry', gi.outputs['Geometry'])
@@ -876,6 +986,9 @@ def make_petal_nodes(name, petal_source):
     # --- scale: grows toward the destination, zero before birth ---
     size = nb.math('ADD', s0, nb.math('MULTIPLY', ue, nb.math('SUBTRACT', s1, s0)))
     size = nb.math('ADD', size, nb.math('MULTIPLY', s_grow, over))
+    # Clamp at zero so a negative growth rate reads as a clean burn-out
+    # instead of flipping the instance inside out and re-growing.
+    size = nb.math('MAXIMUM', size, 0.0)
     alive = nb.compare('GREATER_EQUAL', age, 0.0)
     size = nb.math('MULTIPLY', size, alive)
     size = nb.math('MULTIPLY', size, gi.outputs['Scale Multiplier'])
@@ -918,7 +1031,7 @@ def make_petal_material():
 
     # Lighter toward the centre, more saturated toward the edges + tip.
     edge = nt.nodes.new('ShaderNodeMath'); edge.operation = 'POWER'
-    edge.inputs[1].default_value = 0.8; edge.location = (-600, 0)
+    edge.inputs[1].default_value = 1.7; edge.location = (-600, 0)
     nt.links.new(a_s.outputs['Fac'], edge.inputs[0])
 
     mix1 = nt.nodes.new('ShaderNodeMix'); mix1.data_type = 'RGBA'; mix1.location = (-380, 100)
@@ -943,11 +1056,11 @@ def make_petal_material():
     # the silhouette. Keep the body opaque enough that the split tip remains
     # readable after Resolve adds its own glow.
     rim = nt.nodes.new('ShaderNodeMath'); rim.operation = 'POWER'
-    rim.inputs[1].default_value = 3.0; rim.location = (-420, -380)
+    rim.inputs[1].default_value = 5.0; rim.location = (-420, -380)
     nt.links.new(a_s.outputs['Fac'], rim.inputs[0])
     rim2 = nt.nodes.new('ShaderNodeMath'); rim2.operation = 'MULTIPLY_ADD'
-    rim2.inputs[1].default_value = 0.42
-    rim2.inputs[2].default_value = 0.08
+    rim2.inputs[1].default_value = 1.55
+    rim2.inputs[2].default_value = 0.10
     rim2.location = (-240, -380)
     nt.links.new(rim.outputs[0], rim2.inputs[0])
     nt.links.new(rim2.outputs[0], bsdf.inputs['Emission Strength'])
@@ -977,43 +1090,95 @@ def make_blade_material():
     bsdf = nt.nodes.new('ShaderNodeBsdfPrincipled'); bsdf.location = (320, 0)
     nt.links.new(bsdf.outputs['BSDF'], out.inputs['Surface'])
 
+    # In the reference the blade body is nearly BLACK and all the read comes
+    # from a searing specular line along the edge. A bright flat-grey body (the
+    # previous version) kills the contrast that makes the formation legible.
     bsdf.inputs['Base Color'].default_value = C_BLADE_BODY
-    bsdf.inputs['Metallic'].default_value = 0.72
-    bsdf.inputs['Roughness'].default_value = 0.17
+    bsdf.inputs['Metallic'].default_value = 0.85
+    bsdf.inputs['Roughness'].default_value = 0.12
 
     # Fresnel-driven edge light: gives the blades the luminous silhouette they
-    # have in the Bankai shot without needing an HDRI.
+    # have in the Bankai shot without needing an HDRI. Tight blend + high power
+    # keeps the glow confined to a thin rim instead of washing the whole face.
     lw = nt.nodes.new('ShaderNodeLayerWeight'); lw.location = (-700, 240)
-    lw.inputs['Blend'].default_value = 0.38
+    lw.inputs['Blend'].default_value = 0.16
     fres = nt.nodes.new('ShaderNodeMath'); fres.operation = 'POWER'
-    fres.inputs[1].default_value = 2.2; fres.location = (-500, 240)
+    fres.inputs[1].default_value = 3.4; fres.location = (-500, 240)
     nt.links.new(lw.outputs['Fresnel'], fres.inputs[0])
     fres2 = nt.nodes.new('ShaderNodeMath'); fres2.operation = 'MULTIPLY_ADD'
-    fres2.inputs[1].default_value = 6.0     # bright glowing edge
-    fres2.inputs[2].default_value = 0.55    # body never goes fully dark
+    fres2.inputs[1].default_value = 14.0    # searing white edge, blooms in Resolve
+    fres2.inputs[2].default_value = 0.06    # body stays almost black
     fres2.location = (-320, 240)
     nt.links.new(fres.outputs[0], fres2.inputs[0])
 
-    # Hot band trailing the erosion front.
+    # Hot band trailing the leading front (growth tip AND erosion edge).
     glow = nt.nodes.new('ShaderNodeAttribute')
     glow.attribute_name = 'diss_glow'; glow.location = (-700, -80)
     gp = nt.nodes.new('ShaderNodeMath'); gp.operation = 'POWER'
     gp.inputs[1].default_value = 1.8; gp.location = (-500, -80)
     nt.links.new(glow.outputs['Fac'], gp.inputs[0])
     gm = nt.nodes.new('ShaderNodeMath'); gm.operation = 'MULTIPLY'
-    gm.inputs[1].default_value = 3.0; gm.location = (-320, -80)
+    gm.inputs[1].default_value = 26.0; gm.location = (-320, -80)
     nt.links.new(gp.outputs[0], gm.inputs[0])
 
     total = nt.nodes.new('ShaderNodeMath'); total.operation = 'ADD'; total.location = (-120, 120)
     nt.links.new(fres2.outputs[0], total.inputs[0])
     nt.links.new(gm.outputs[0], total.inputs[1])
-    nt.links.new(total.outputs[0], bsdf.inputs['Emission Strength'])
+
+    # Per-blade tonal falloff so the wing has depth instead of reading flat.
+    bright = nt.nodes.new('ShaderNodeAttribute')
+    bright.attribute_name = 'sw_bright'; bright.location = (-320, 400)
+    shade = nt.nodes.new('ShaderNodeMath'); shade.operation = 'MULTIPLY'
+    shade.location = (60, 120)
+    nt.links.new(total.outputs[0], shade.inputs[0])
+    nt.links.new(bright.outputs['Fac'], shade.inputs[1])
+    nt.links.new(shade.outputs[0], bsdf.inputs['Emission Strength'])
 
     ecol = nt.nodes.new('ShaderNodeMix'); ecol.data_type = 'RGBA'; ecol.location = (-120, -120)
     ecol.inputs[6].default_value = C_BLADE_GLOW
     ecol.inputs[7].default_value = C_PETAL_FILL
     nt.links.new(gp.outputs[0], ecol.inputs[0])
     nt.links.new(ecol.outputs[2], bsdf.inputs['Emission Color'])
+    return mat
+
+
+def make_ember_material():
+    """Pure emission, white-hot at birth cooling to magenta.
+
+    The transformation plume in the reference is not lit geometry -- it is
+    self-luminous sparks blown well past white. Driving this off the petal's own
+    length coordinate gives each fleck a hot core and a cooler tail without
+    needing per-particle age in the shader.
+    """
+    mat = bpy.data.materials.get('MAT_Senbonzakura_Ember') or \
+        bpy.data.materials.new('MAT_Senbonzakura_Ember')
+    mat.use_nodes = True
+    mat.surface_render_method = 'DITHERED'
+    mat.use_backface_culling = False
+    nt = mat.node_tree
+    nt.nodes.clear()
+    out = nt.nodes.new('ShaderNodeOutputMaterial'); out.location = (420, 0)
+    em = nt.nodes.new('ShaderNodeEmission'); em.location = (220, 0)
+    nt.links.new(em.outputs['Emission'], out.inputs['Surface'])
+
+    a_t = nt.nodes.new('ShaderNodeAttribute')
+    a_t.attribute_name = 'pt'; a_t.location = (-620, 0)
+    ramp = nt.nodes.new('ShaderNodeMath'); ramp.operation = 'POWER'
+    ramp.inputs[1].default_value = 0.42; ramp.location = (-440, 0)
+    nt.links.new(a_t.outputs['Fac'], ramp.inputs[0])
+
+    mix = nt.nodes.new('ShaderNodeMix'); mix.data_type = 'RGBA'; mix.location = (-240, 60)
+    mix.inputs[6].default_value = C_EMBER_HOT
+    mix.inputs[7].default_value = C_EMBER_COOL
+    nt.links.new(ramp.outputs[0], mix.inputs[0])
+    nt.links.new(mix.outputs[2], em.inputs['Color'])
+
+    stren = nt.nodes.new('ShaderNodeMath'); stren.operation = 'MULTIPLY_ADD'
+    stren.inputs[1].default_value = -5.0
+    stren.inputs[2].default_value = 9.5
+    stren.location = (-240, -140)
+    nt.links.new(ramp.outputs[0], stren.inputs[0])
+    nt.links.new(stren.outputs[0], em.inputs['Strength'])
     return mat
 
 
@@ -1170,21 +1335,37 @@ def make_readme(counts):
     w('  Frame 60 is the only frame that is 100.0% opaque with zero gaps, so\n')
     w('  that is the safest single frame to cut on. 53-60 are all >=99%.\n\n')
     w('OBJECTS\n')
-    w('  Senbonzakura_Swords   all blades in one mesh + the emerge/erode nodes\n')
-    w('  Petals_SWORD_FRAGMENTS short-range breakup fragments born on blade faces\n')
-    w('  Petals_FAR / MID      the flowing background and midground swarm\n')
+    w('  Senbonzakura_Swords   all 44 blades in one mesh + the grow/erode nodes\n')
+    w('  Petals_EMBERS         the white-hot breakup plume (tiny, self-lit)\n')
+    w('  Petals_FAR / MID      the orbiting background and midground swarm\n')
     w('  Petals_NEAR_WAVE      the foreground petals that engulf the frame\n')
     w('  Petals_CROSSERS       fragments that punch past the camera plane\n')
     w('  Petal_SOURCE          the instanced sakura petal (hidden)\n')
-    w('  FX_Petal_Haze         soft pink card that seals the alpha at 53-62\n')
+    w('  Ember_SOURCE          same petal, emission-only shader (hidden)\n')
+    w('  FX_Petal_Haze         faint pink card that seals the alpha at 54-62\n')
     w('  Camera_Senbonzakura   50mm at +Z looking down -Z; X=right, Y=up\n\n')
-    w('COUNTS\n')
-    for name, n in counts:
-        w('  %-20s %d\n' % (name, n))
+    w('BLADE FORMATION\n')
+    w('  Matched to Swords_rising/. Two mirrored wings of 22 HOOKED blades --\n')
+    w('  each is a constant-curvature arc that leaves the pivot below Byakuya\n')
+    w('  angled outward and turns back inward as it rises, so the tips lean\n')
+    w('  toward the centre and open the V notch he stands in. A straight blade\n')
+    w('  plus a rotation cannot reproduce that silhouette.\n')
+    w('  Fully deterministic -- no RNG -- so it registers against the Byakuya\n')
+    w('  plate in Resolve and is identical on every rebuild. The controlling\n')
+    w('  constants are TH_ROOT / TH_BEND / BLADE_LEN / ROOT_SX / ROOT_SY,\n')
+    w('  all in screen units where 1.0 == half the frame height.\n\n')
+    w('GROWTH AND BREAKUP\n')
+    w('  Both phases are one operation: a front sweeping along blade_u.\n')
+    w('  Growth runs root->tip, erosion runs tip->root, and the blade is what\n')
+    w('  lies behind BOTH (a single min). The leading edge glows in either\n')
+    w('  phase, and the surface necks toward its own centreline at the front\n')
+    w('  so it ends in a needle rather than a blunt stump.\n')
+    w('  Every ember and petal is born ON the blade surface at the instant the\n')
+    w('  erosion front uncovers its sample point -- same equation, so the\n')
+    w('  handoff is causal rather than a crossfade into a separate emitter.\n\n')
     w('\nTUNING\n')
-    w('  Sword modifier: Emerge Height, Erosion Roughness, Front Glow Width,\n')
-    w('    Front Taper (how far back the blade necks down as it erodes --\n')
-    w('    set it to 0 to see why it exists).\n')
+    w('  Sword modifier: Growth Sharpness, Erosion Roughness, Front Glow\n')
+    w('    Width, Front Taper (set Front Taper to 0 to see why it exists).\n')
     w('  Petal modifiers: Visible Count (drop it for fast previews),\n')
     w('    Scale Multiplier, Time Offset, Wobble, Spin.\n')
     w('  Anything structural -- formation, destinations, timing -- lives in\n')
@@ -1220,6 +1401,17 @@ def main():
     petal_src.hide_render = True
     petal_src.hide_viewport = True
 
+    # Same petal geometry, self-luminous shader: the plume flecks are literally
+    # tiny petals, so the transformation stays one continuous idea.
+    ember_src = build_petal_mesh()
+    ember_src.name = 'Ember_SOURCE'
+    ember_src.data.materials.clear()
+    ember_src.data.materials.append(make_ember_material())
+    ember_src['README'] = 'Tiny white-hot fleck for the sword breakup plume.'
+    src_col.objects.link(ember_src)
+    ember_src.hide_render = True
+    ember_src.hide_viewport = True
+
     # --- swords ---
     swords = layout_swords()
     sword_obj = build_swords_mesh(swords)
@@ -1230,25 +1422,28 @@ def main():
 
     # --- petals ---
     petal_ng = make_petal_nodes('GN_Senbonzakura_Petals', petal_src)
+    ember_ng = make_petal_nodes('GN_Senbonzakura_Embers', ember_src)
     layers = [
-        # This is the visible causal bridge: small fragments are born directly
-        # on the eroding blades and remain near them before joining the orbit.
-        ('Petals_SWORD_FRAGMENTS', 520, spec_sword_fragments(), 111),
-        ('Petals_FAR', 760, spec_far(), 101),
-        ('Petals_MID', 540, spec_mid(), 202),
+        # The causal bridge, and the biggest single fix versus the last pass:
+        # a dense fountain of tiny white-hot flecks thrown off the erosion
+        # front, exactly as in single_sword_transform_sample. High count and
+        # tiny size are both load-bearing -- this has to read as sparks.
+        ('Petals_EMBERS', 9000, spec_embers(), 111, ember_ng),
+        ('Petals_FAR', 900, spec_far(), 101, petal_ng),
+        ('Petals_MID', 680, spec_mid(), 202, petal_ng),
         # Four staggered depths so coverage builds through 46-52, holds solid
         # through 53-60, then unloads. Grid is 10x7 per wave.
-        ('Petals_NEAR_WAVE', 360, spec_near(
+        ('Petals_NEAR_WAVE', 1050, spec_near(
             [(9.5, 47.5, 51.5), (11.5, 50.0, 54.0),
-             (13.0, 52.5, 56.5), (14.2, 55.0, 59.5)], 10, 7), 303),
-        ('Petals_CROSSERS', 64, spec_crossers(), 404),
+             (13.0, 52.5, 56.5), (14.2, 55.0, 59.5)], 10, 7), 303, petal_ng),
+        ('Petals_CROSSERS', 64, spec_crossers(), 404, petal_ng),
     ]
     counts = []
-    for name, count, spec, seed in layers:
+    for name, count, spec, seed, node_group in layers:
         obj = bake_petal_layer(name, swords, count, spec, seed)
         petal_col.objects.link(obj)
         m = obj.modifiers.new('Senbonzakura petals (Geometry Nodes)', 'NODES')
-        m.node_group = petal_ng
+        m.node_group = node_group
         counts.append((name, count))
     counts.append(('swords', len(swords)))
 
