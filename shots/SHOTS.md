@@ -1,14 +1,14 @@
 # Sequence
 
-Six shots cut from `assets/footage/byakuya_tybw_edit.mp4`, 453 frames / 18.88s
-at 24fps, 1920x1080.
+Six shots cut from `assets/footage/byakuya_tybw_edit.mp4`, 409 frames / 17.04s
+at 24fps, 1920x1080. The fan edit's burned-in titles are removed.
 
 | # | Shot | Source | Crop y | Frames | Content |
 |---|------|--------|--------|--------|---------|
 | 1 | shot01_release     | 0.000-1.033  | 480 | 25  | black, then the hand opens and the sword drops |
 | 2 | shot02_sink        | 1.033-3.533  | 580 | 60  | blade enters the floor, sinks, ripples settle |
 | 3 | shot03_swords      | 3.533-9.533  | 592 | 144 | BANKAI title; the two wings of blades rise into the V |
-| 4 | shot04_declaration | 9.533-12.633 | 350 | 74  | face close-up, SENBONZAKURA KAGEYOSHI titles |
+| 4 | shot04_declaration | 9.533-12.633 | 350 | 30  | face close-up (title frames dropped) |
 | 5 | shot05_eruption    | 12.633-14.275| 500 | 39  | single light blade, petals erupt upward |
 | 6 | shot06_storm       | 14.275-18.900| 500 | 111 | petal columns, storm fills frame |
 
@@ -42,8 +42,37 @@ Cut points come from ffmpeg scene detection, then checked frame by frame:
         --start <t> --duration <d> --crop 1080:608:0:<y>
     tools/assemble.py --slate
 
+## Titles
+
+The fan edit burned two titles into the picture. They are removed by
+`tools/detext.py`, which keeps the untouched original in `plate_raw/` so every
+pass is re-runnable.
+
+**BANKAI** (shot 3, frames 9-32) sat on flat, unmoving night sky. Measuring
+that region across the title-free frames gave a temporal standard deviation of
+2.4, so the background is effectively static and can simply be replaced with a
+median clean plate. Result is exact — zero residual glyph pixels.
+
+    tools/detext.py shot03_swords --plate --rect 440,160,1490,390 \
+        --clean 1-8,34-60 --frames 9-32
+
+**SENBONZAKURA KAGEYOSHI** (shot 4, frames 24-66) sat on Byakuya's face. Three
+methods were tried and rejected: ffmpeg `delogo` streaks wherever the box
+crosses his hair; masked inpainting works on the flat skin but turns to mush
+where it spans the hair edge; and a warped clean plate fails because the cel is
+animated, not a held zoom (best-fit correlation only 0.40). The glyphs also
+carry a dark neutral outline no colour test detects, which is what leaves grey
+ghosts behind.
+
+So the titled frames are dropped instead. The join was chosen by searching all
+head/tail pairs for the smallest difference:
+
+    tools/detext.py shot04_declaration --keep 1-23,68-74
+
+That join measures 26.8 against this shot's own natural frame-to-frame motion
+of 4.5-25.1, so it sits inside the movement the shot already has. The shot
+goes from 74 frames to 30.
+
 ## Not yet done
 
-No VFX. Every shot is the plate as-cut. The burned-in BANKAI and SENBONZAKURA
-titles are still the fan edit's own; PLAN.md assigns titles to the grade, so
-they are candidates for replacement.
+No VFX. Every shot is the plate as-cut.
