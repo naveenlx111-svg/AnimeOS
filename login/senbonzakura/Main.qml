@@ -1,98 +1,117 @@
-pragma ComponentBehavior: Bound
+import QtQuick
+import QtQuick.Controls
 
-import QtQuick 2.15
-
+// AnimeOS - Senbonzakura greeter.
+//
+// The Bankai sequence plays first; the login appears once it finishes. Any
+// key or click skips ahead -- watching seventeen seconds is a pleasure the
+// first time and a tax on the hundredth, and a login has to stay usable when
+// you are in a hurry.
 Rectangle {
     id: root
-
     width: 1920
     height: 1080
+    color: Theme.night
 
-    color: "#08030b"
+    // SDDM injects these; absent under qmlscene, hence the guards.
+    property var sddmHost: (typeof sddm !== "undefined") ? sddm : null
+    property var users: (typeof userModel !== "undefined") ? userModel : null
+    property var sessions: (typeof sessionModel !== "undefined") ? sessionModel : null
 
-    // ============================================================
-    // DISTANT PARTICLES
-    // ============================================================
+    property string previewUser: ""
+    property alias backdropItem: backdrop
+    property bool ready: false           // sequence over, login usable
+    property bool authenticated: false
 
-    Repeater {
-        model: 25
-
-        Petal {
-            x: Math.random() * root.width
-            y: Math.random() * root.height
-
-            petalScale: 0.25 + Math.random() * 0.35
-            petalOpacity: 0.15 + Math.random() * 0.35
-
-            fallSpeed: 0.35 + Math.random() * 0.45
-            driftAmount: 15 + Math.random() * 30
-            driftSpeed: 0.3 + Math.random() * 0.7
-            rotationSpeed: 40 + Math.random() * 100
-
-            glowAmount: 0.15
-        }
+    Background {
+        id: backdrop
+        anchors.fill: parent
+        onFinished: root.ready = true
     }
 
-    // ============================================================
-    // MAIN PARTICLES
-    // ============================================================
-
-    Repeater {
-        model: 35
-
-        Petal {
-            x: Math.random() * root.width
-            y: Math.random() * root.height
-
-            petalScale: 0.45 + Math.random() * 0.65
-            petalOpacity: 0.45 + Math.random() * 0.5
-
-            fallSpeed: 0.55 + Math.random() * 0.9
-            driftAmount: 25 + Math.random() * 60
-            driftSpeed: 0.5 + Math.random() * 1.1
-            rotationSpeed: 70 + Math.random() * 150
-
-            glowAmount: 0.28 + Math.random() * 0.15
-        }
+    PetalField {
+        anchors.fill: parent
+        active: root.ready && !root.authenticated
+        opacity: root.ready ? 1 : 0
+        Behavior on opacity { NumberAnimation { duration: Theme.slow } }
     }
 
-    // ============================================================
-    // FOREGROUND PARTICLES
-    // ============================================================
+    Login {
+        id: login
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.verticalCenter: parent.verticalCenter
+        anchors.verticalCenterOffset: -parent.height * 0.06
 
-    Repeater {
-        model: 10
+        sddmHost: root.sddmHost
+        users: root.users
+        sessions: root.sessions
 
-        Petal {
-            x: Math.random() * root.width
-            y: Math.random() * root.height
+        // SDDM supplies the last user; standalone previews fall back to
+        // previewUser so the panel is never blank while iterating.
+        userName: (root.users && root.users.lastUser)
+                  ? root.users.lastUser
+                  : root.previewUser
 
-            petalScale: 0.9 + Math.random() * 0.8
-            petalOpacity: 0.65 + Math.random() * 0.3
+        sessionIndex: root.sessions ? root.sessions.lastIndex : 0
 
-            fallSpeed: 0.8 + Math.random() * 1.2
-            driftAmount: 40 + Math.random() * 80
-            driftSpeed: 0.7 + Math.random() * 1.3
-            rotationSpeed: 100 + Math.random() * 180
+        visible: opacity > 0
+        opacity: (root.ready && !root.authenticated) ? 1 : 0
+        Behavior on opacity { NumberAnimation { duration: Theme.slow } }
 
-            glowAmount: 0.35
-        }
+        onAuthAccepted: root.authenticated = true
     }
 
-    // ============================================================
-    // TEMPORARY TITLE
-    // ============================================================
-
+    // Skip affordance, held back a beat so it does not step on the opening.
     Text {
-        anchors.centerIn: parent
-
-        text: "ANIMEOS"
-
-        color: "#ffffff"
-
-        font.pixelSize: 64
-        font.bold: true
-
-        opacity: 0.85
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 46
+        text: "press any key to skip"
+        color: Theme.muted
+        font.pixelSize: 13
+        font.letterSpacing: 2.2
+        opacity: (!root.ready && hintDelay.triggered) ? 0.4 : 0
+        Behavior on opacity { NumberAnimation { duration: Theme.slow } }
     }
+
+    Timer {
+        id: hintDelay
+        interval: 2200
+        running: true
+        property bool triggered: false
+        onTriggered: triggered = true
+    }
+
+    // Skip on any input while the sequence is running.
+    MouseArea {
+        anchors.fill: parent
+        enabled: !root.ready
+        onClicked: backdrop.skip()
+    }
+
+    Item {
+        anchors.fill: parent
+        focus: !root.ready
+        Keys.onPressed: function(event) {
+            backdrop.skip()
+            event.accepted = true
+        }
+    }
+
+    Rectangle {
+        anchors.fill: parent
+        color: "black"
+        opacity: root.authenticated ? 1 : 0
+        Behavior on opacity { NumberAnimation { duration: Theme.slow } }
+    }
+
+    Connections {
+        target: root.sddmHost
+        ignoreUnknownSignals: true
+        function onLoginSucceeded() { root.authenticated = true }
+        function onLoginFailed() { login.onFailed("Authentication failed") }
+        function onInformationMessage(msg) { login.message = msg }
+    }
+
+    onReadyChanged: if (ready) login.forceActiveFocus()
 }
