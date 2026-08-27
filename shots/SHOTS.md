@@ -38,9 +38,38 @@ Cut points come from ffmpeg scene detection, then checked frame by frame:
 
 ## Rebuilding
 
-    tools/ingest.py cut assets/footage/byakuya_tybw_edit.mp4 <shot> \
-        --start <t> --duration <d> --crop 1080:608:0:<y>
-    tools/assemble.py --slate
+The cut list lives in `shots/cuts.json`. Rebuild everything from it:
+
+    tools/recut.py                    # or --source <newclip> --dry-run
+
+## Resolution ceiling
+
+The current source cannot reach HD, let alone 4K, and this is a property of
+the footage rather than of the scaling.
+
+A round-trip test (shrink, re-enlarge, measure the error) shows the fan edit
+loses almost nothing when reduced to 812x1082 (RMS 2.95). So it is itself an
+upscale: an ~810x1080 vertical slice taken out of a 16:9 original and blown up
+1.33x. After the 608-tall crop band, each delivered frame rests on roughly
+**810x456 of real detail**.
+
+| Output | Upscale over real detail |
+|--------|--------------------------|
+| 1920x1080 | 2.37x |
+| 3840x2160 | 4.74x |
+
+The fix is a better source, not a better scaler. A 1080p broadcast source of
+the same scene carries about 5.6x more real detail and removes three separate
+compromises at once: the watermark that forced shot 3's crop, the burned-in
+titles that cost shot 4 its middle 43 frames, and the vertical reframing.
+
+When that source lands, re-derive the cut points with:
+
+    tools/probe_cuts.py assets/footage/<clip> --start <t> --end <t>
+
+then update `shots/cuts.json` and run `tools/recut.py`. Timings and crops from
+the fan edit do not transfer: a different release has its own cut points, and
+a 16:9 source needs no crop at all.
 
 ## Titles
 

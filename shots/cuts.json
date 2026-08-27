@@ -1,0 +1,20 @@
+{
+  "_comment": "The cut list, as data. Re-derive against a new source with tools/recut.py.",
+  "source": "assets/footage/byakuya_tybw_edit.mp4",
+  "fps": 24,
+  "resolution": [1920, 1080],
+  "crop_note": "crop is W:H:X:Y applied before scaling; null means the source is already 16:9 and needs none",
+  "shots": [
+    {"name": "shot01_release",      "start": 0.0,    "duration": 1.033, "crop": "1080:608:0:480"},
+    {"name": "shot02_sink",         "start": 1.033,  "duration": 2.500, "crop": "1080:608:0:580"},
+    {"name": "shot03_swords",       "start": 3.533,  "duration": 6.000, "crop": "1080:608:0:592"},
+    {"name": "shot04_declaration",  "start": 9.533,  "duration": 3.100, "crop": "1080:608:0:350",
+     "keep": "1-23,68-74"},
+    {"name": "shot05_eruption",     "start": 12.633, "duration": 1.642, "crop": "1080:608:0:500"},
+    {"name": "shot06_storm",        "start": 14.275, "duration": 4.625, "crop": "1080:608:0:500"}
+  ],
+  "detext": [
+    {"shot": "shot03_swords", "mode": "plate", "rect": "440,160,1490,390",
+     "clean": "1-8,34-60", "frames": "9-32"}
+  ]
+}
