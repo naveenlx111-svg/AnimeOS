@@ -9,3 +9,12 @@ Initial_render/renders/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Source footage: large, and not ours to redistribute
+assets/footage/*
+!assets/footage/README.md
+
+# Per-shot frame data: all regenerable from footage + build scripts
+shots/*/plate/
+shots/*/vfx/
+shots/*/out/
