@@ -2,7 +2,8 @@
 """Probe a source clip and cut a frame range out of it as a PNG plate.
 
     tools/ingest.py probe  assets/footage/clip.mkv
-    tools/ingest.py cut    assets/footage/clip.mkv shot01_emergence --start 00:04:12.5 --frames 60
+    tools/ingest.py cut    assets/footage/clip.mkv shot01_release --start 0 --frames 25 \
+                           --crop 1080:608:0:480
 
 `probe` tells you what you have. `cut` writes shots/<shot>/plate/####.png at the
 project fps, which is what every later stage reads. Frames are the unit of work
@@ -55,11 +56,16 @@ def cmd_cut(args):
     for old in dest.glob('*.png'):
         old.unlink()
 
+    # Crop first when asked: a vertical source has to be reframed to 16:9
+    # before scaling, or it arrives as a pillarboxed sliver.
+    vf = f"fps={FPS},"
+    if args.crop:
+        vf += f"crop={args.crop},"
     # Scale to fit inside the frame and pad, so a non-16:9 source is never
     # stretched -- the VFX layer is authored against exact frame geometry.
-    vf = (f"fps={FPS},"
-          f"scale={RES[0]}:{RES[1]}:force_original_aspect_ratio=decrease,"
-          f"pad={RES[0]}:{RES[1]}:(ow-iw)/2:(oh-ih)/2:black")
+    vf += (f"scale={RES[0]}:{RES[1]}:force_original_aspect_ratio=decrease:"
+           f"flags=lanczos,"
+           f"pad={RES[0]}:{RES[1]}:(ow-iw)/2:(oh-ih)/2:black")
 
     cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error',
            '-ss', args.start, '-i', str(args.clip)]
@@ -88,6 +94,7 @@ def main():
     c.add_argument('--start', default='0', help='timestamp, e.g. 00:04:12.5')
     c.add_argument('--frames', type=int, help='how many frames to take')
     c.add_argument('--duration', help='alternative to --frames, e.g. 2.5')
+    c.add_argument('--crop', help='reframe before scaling: W:H:X:Y, e.g. 1080:608:0:580')
     c.set_defaults(func=cmd_cut)
 
     args = ap.parse_args()
