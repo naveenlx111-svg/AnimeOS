@@ -37,6 +37,8 @@ to leave Byakuya standing in the dark, waiting.
 | `Main.qml` | flow: sequence -> login -> auth, and the skip handling |
 | `Background.qml` | two-stage video backdrop, with a still fallback |
 | `Login.qml` | the panel; takes SDDM's objects as properties so it can run standalone |
+| `SystemBar.qml` | session picker (left) and suspend / restart / shut down (right) |
+| `GlyphButton.qml` | small circular icon button; icons drawn with Canvas, not a font |
 | `PetalField.qml` | three depth bands of drifting petals |
 | `Petal.qml` | one petal: vector silhouette plus a baked glow |
 | `Theme.qml` | palette and timing, shared with the Blender VFX values |
@@ -67,10 +69,33 @@ Test it before relying on it:
 Keep a TTY available (Ctrl+Alt+F2) the first time. To revert, set `current`
 back to `breeze`.
 
+## The panel
+
+Avatar initial, user name, password, and the BANKAI button, which stays
+disabled until something is typed. Below that: a caps-lock warning, and the
+failure state shakes the panel and clears the field.
+
+Session and power controls sit along the bottom edge rather than inside the
+panel -- they are used rarely, and putting them in the panel would crowd the
+one thing the screen is actually for. The clock is top right.
+
+Icons are drawn with `Canvas` rather than a font glyph, because the greeter
+runs before any user fontconfig is loaded and an icon font is not something
+we can rely on being present.
+
+## Previewing states
+
+`login/preview/Mocks.qml` stands in for SDDM's injected objects. To see the
+filled / caps-lock state, set `typed` and `capsOn` at the top of `grab.qml`.
+
 ## Not done yet
 
-- The session and power controls are not built; the panel is password-only.
+- **No VFX anywhere.** Every `shots/*/vfx/` is empty. The backdrop is
+  conformed footage only.
+- **No desktop reveal.** On success the greeter fades to black and SDDM
+  starts the session; the petals-clear-into-KDE transition does not exist.
 - The sequence is the 17s cut, which is a long wait on a busy morning. It is
   skippable, but the cut itself probably wants trimming.
 - Petal art is the existing five SVGs; they read more like feathers than
   sakura at small sizes.
+- Multi-user switching is wired but untested -- this machine has one account.

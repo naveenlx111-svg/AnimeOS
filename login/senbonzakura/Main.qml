@@ -17,6 +17,7 @@ Rectangle {
     property var sddmHost: (typeof sddm !== "undefined") ? sddm : null
     property var users: (typeof userModel !== "undefined") ? userModel : null
     property var sessions: (typeof sessionModel !== "undefined") ? sessionModel : null
+    property var keyboardState: (typeof keyboard !== "undefined") ? keyboard : null
 
     property string previewUser: ""
     property alias backdropItem: backdrop
@@ -45,6 +46,8 @@ Rectangle {
         sddmHost: root.sddmHost
         users: root.users
         sessions: root.sessions
+        keyboardState: root.keyboardState
+        sessionIndex: bar.sessionIndex
 
         // SDDM supplies the last user; standalone previews fall back to
         // previewUser so the panel is never blank while iterating.
@@ -52,13 +55,64 @@ Rectangle {
                   ? root.users.lastUser
                   : root.previewUser
 
-        sessionIndex: root.sessions ? root.sessions.lastIndex : 0
-
         visible: opacity > 0
         opacity: (root.ready && !root.authenticated) ? 1 : 0
         Behavior on opacity { NumberAnimation { duration: Theme.slow } }
 
         onAuthAccepted: root.authenticated = true
+    }
+
+    // Clock. Present once the sequence is over, so it never competes with the
+    // opening; a login screen is also a thing people glance at for the time.
+    Column {
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.rightMargin: 52
+        anchors.topMargin: 42
+        spacing: 2
+        opacity: (root.ready && !root.authenticated) ? 1 : 0
+        Behavior on opacity { NumberAnimation { duration: Theme.slow } }
+
+        Text {
+            anchors.right: parent.right
+            text: Qt.formatTime(clock.now, "HH:mm")
+            color: Theme.petalLight
+            font.pixelSize: 40
+            font.letterSpacing: 2
+            opacity: 0.9
+        }
+        Text {
+            anchors.right: parent.right
+            text: Qt.formatDate(clock.now, "dddd, d MMMM")
+            color: Theme.muted
+            font.pixelSize: 13
+            font.letterSpacing: 1.6
+            opacity: 0.7
+        }
+    }
+
+    Timer {
+        id: clock
+        property date now: new Date()
+        interval: 1000
+        running: true
+        repeat: true
+        onTriggered: now = new Date()
+    }
+
+    SystemBar {
+        id: bar
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 14
+
+        sddmHost: root.sddmHost
+        sessions: root.sessions
+
+        opacity: (root.ready && !root.authenticated) ? 1 : 0
+        visible: opacity > 0
+        Behavior on opacity { NumberAnimation { duration: Theme.slow } }
     }
 
     // Skip affordance, held back a beat so it does not step on the opening.
@@ -112,6 +166,9 @@ Rectangle {
         function onLoginFailed() { login.onFailed("Authentication failed") }
         function onInformationMessage(msg) { login.message = msg }
     }
+
+    // preview aid: lets the harness show the filled / enabled state
+    function fillPassword(t) { login.setPassword(t) }
 
     onReadyChanged: if (ready) login.forceActiveFocus()
 }
