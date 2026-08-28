@@ -49,11 +49,10 @@ Rectangle {
         keyboardState: root.keyboardState
         sessionIndex: bar.sessionIndex
 
-        // SDDM supplies the last user; standalone previews fall back to
-        // previewUser so the panel is never blank while iterating.
-        userName: (root.users && root.users.lastUser)
-                  ? root.users.lastUser
-                  : root.previewUser
+        // SDDM's lastUser is empty until someone has logged in once, and in
+        // test mode it is always empty -- so fall back to the first account
+        // in the model rather than showing a bare "?".
+        userName: root.resolveUser()
 
         visible: opacity > 0
         opacity: (root.ready && !root.authenticated) ? 1 : 0
@@ -165,6 +164,19 @@ Rectangle {
         function onLoginSucceeded() { root.authenticated = true }
         function onLoginFailed() { login.onFailed("Authentication failed") }
         function onInformationMessage(msg) { login.message = msg }
+    }
+
+    function resolveUser() {
+        if (users) {
+            if (users.lastUser && users.lastUser.length > 0)
+                return users.lastUser
+            if (users.count > 0) {
+                var v = users.data(users.index(0, 0), Qt.UserRole + 1)
+                if (v && v.length > 0)
+                    return v
+            }
+        }
+        return previewUser
     }
 
     // preview aid: lets the harness show the filled / enabled state

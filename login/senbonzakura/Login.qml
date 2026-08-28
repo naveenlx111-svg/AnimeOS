@@ -33,13 +33,26 @@ FocusScope {
             return
         busy = true
         message = ""
-        if (sddmHost)
+        if (sddmHost) {
             sddmHost.login(root.userName, password.text, root.sessionIndex)
-        else
+            stuck.restart()
+        } else {
             authAccepted()                  // standalone preview
+        }
+    }
+
+    // If the host never answers -- which is exactly what happens under
+    // --test-mode -- the button would otherwise sit on its busy dash forever
+    // and the field would stay disabled, locking the user out of their own
+    // login screen.
+    Timer {
+        id: stuck
+        interval: 12000
+        onTriggered: root.onFailed("No response from the login service")
     }
 
     function onFailed(text) {
+        stuck.stop()
         busy = false
         message = text || "Authentication failed"
         password.text = ""
