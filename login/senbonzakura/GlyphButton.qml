@@ -8,7 +8,7 @@ import QtQuick
 Item {
     id: root
 
-    property string kind: "power"        // power | restart | sleep | session
+    property string kind: "power"        // power | restart | sleep | session | prev | next
     property string tooltip: ""
     property bool active: false
     signal clicked()
@@ -35,8 +35,12 @@ Item {
     Canvas {
         id: icon
         anchors.centerIn: parent
-        width: 18
-        height: 18
+        // Scales with the button rather than sitting at a fixed 18: the panel
+        // uses 24px buttons where the system bar uses 38, and a glyph frozen
+        // at one size fills the small ones edge to edge.
+        width: Math.round(root.width * 0.47)
+        height: width
+        onWidthChanged: requestPaint()
         antialiasing: true
 
         property color stroke: (mouse.containsMouse || root.active)
@@ -74,6 +78,18 @@ Item {
                 // crescent
                 c.beginPath()
                 c.arc(cx + 1, cy, r, Math.PI * 0.35, Math.PI * 1.55)
+                c.stroke()
+            } else if (root.kind === "prev" || root.kind === "next") {
+                // chevron. These used to borrow the session glyph, which said
+                // "list" where the control means "the account either side of
+                // this one" -- two of them flanking a name read as a stepper
+                // only if they point.
+                var d = root.kind === "next" ? 1 : -1
+                var a = r * 0.62
+                c.beginPath()
+                c.moveTo(cx - d * a * 0.5, cy - a)
+                c.lineTo(cx + d * a * 0.5, cy)
+                c.lineTo(cx - d * a * 0.5, cy + a)
                 c.stroke()
             } else {
                 // session: three stacked lines

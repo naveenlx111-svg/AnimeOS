@@ -42,12 +42,18 @@ FocusScope {
     }
 
     // If the host never answers -- which is exactly what happens under
-    // --test-mode -- the button would otherwise sit on its busy dash forever
-    // and the field would stay disabled, locking the user out of their own
-    // login screen.
+    // --test-mode, where the greeter posts the login to a daemon socket with
+    // nothing listening on it -- the button would otherwise sit on its busy
+    // dash forever and the field would stay disabled, locking the user out of
+    // their own login screen.
+    //
+    // Four seconds, not twelve. Twelve was chosen as a generous ceiling for a
+    // slow PAM stack, but it is far past the point where a dead button has
+    // already been read as broken: nothing comes back, so the only thing the
+    // wait buys is the user pressing Enter again into a disabled field.
     Timer {
         id: stuck
-        interval: 12000
+        interval: 4000
         onTriggered: root.onFailed("No response from the login service")
     }
 
@@ -121,45 +127,40 @@ FocusScope {
         NumberAnimation { target: root; property: "anchors.horizontalCenterOffset"; to:  0; duration: 45 }
     }
 
+    // Spacing is set per item rather than by one uniform gap, so the panel
+    // reads as three groups -- who you are, where you type, what happened --
+    // instead of an evenly spaced list of six unrelated things.
     ColumnLayout {
         id: column
         anchors.centerIn: parent
         width: parent.width - 72
-        spacing: 14
+        spacing: 0
 
         // ------------------------------------------------------- identity
 
-        Item {
+        // This replaces the initial-in-a-circle that used to sit here. That
+        // circle repeated the username directly under it and said nothing
+        // else, and stacking it above the mark would have pushed the field
+        // off the panel's centre. On a machine with one account an avatar is
+        // decoration either way, so it may as well be the right decoration.
+        ByakuyaMark {
             Layout.alignment: Qt.AlignHCenter
-            Layout.preferredWidth: 74
-            Layout.preferredHeight: 74
-
-            Rectangle {
-                anchors.fill: parent
-                radius: width / 2
-                color: Qt.rgba(Theme.petalDeep.r, Theme.petalDeep.g,
-                               Theme.petalDeep.b, 0.22)
-                border.width: 1
-                border.color: Qt.rgba(Theme.rim.r, Theme.rim.g, Theme.rim.b, 0.40)
-            }
-
-            Text {
-                anchors.centerIn: parent
-                text: root.userName.length > 0 ? root.userName.charAt(0).toUpperCase() : "?"
-                color: Theme.petalLight
-                font.pixelSize: 30
-                font.bold: true
-            }
+            Layout.preferredWidth: 112
+            Layout.preferredHeight: 129
+            opacity: root.busy ? 0.55 : 1.0
+            Behavior on opacity { NumberAnimation { duration: Theme.normal } }
         }
 
         RowLayout {
             Layout.alignment: Qt.AlignHCenter
-            spacing: 10
+            Layout.topMargin: 4
+            spacing: 8
 
             GlyphButton {
                 visible: root.users && root.users.count > 1
-                implicitWidth: 24; implicitHeight: 24
-                kind: "session"
+                implicitWidth: 26; implicitHeight: 26
+                kind: "prev"
+                tooltip: ""
                 onClicked: root.selectUser(root.userIndex - 1)
             }
 
@@ -173,14 +174,16 @@ FocusScope {
 
             GlyphButton {
                 visible: root.users && root.users.count > 1
-                implicitWidth: 24; implicitHeight: 24
-                kind: "session"
+                implicitWidth: 26; implicitHeight: 26
+                kind: "next"
+                tooltip: ""
                 onClicked: root.selectUser(root.userIndex + 1)
             }
         }
 
         Text {
             Layout.fillWidth: true
+            Layout.topMargin: 4
             horizontalAlignment: Text.AlignHCenter
             text: "SENBONZAKURA KAGEYOSHI"
             color: Theme.muted
@@ -189,17 +192,16 @@ FocusScope {
             opacity: 0.6
         }
 
-        Item { Layout.preferredHeight: 2 }
-
         // ------------------------------------------------------- password
 
         TextField {
             id: password
             Layout.fillWidth: true
+            Layout.topMargin: 22
             Layout.preferredHeight: 46
             focus: true
             echoMode: TextInput.Password
-            passwordCharacter: "•"
+            passwordCharacter: "\u2022"
             placeholderText: "password"
             placeholderTextColor: Qt.rgba(Theme.muted.r, Theme.muted.g, Theme.muted.b, 0.45)
             color: Theme.petalLight
@@ -225,55 +227,104 @@ FocusScope {
             Keys.onEnterPressed: root.submit()
         }
 
+        // Caps lock keeps its height whether or not it is showing. It used to
+        // appear and disappear inside a layout, which moved the button under
+        // the cursor at the exact moment someone was reaching for it.
         Text {
             Layout.fillWidth: true
+            Layout.topMargin: 7
+            Layout.preferredHeight: 13
             horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
             text: "caps lock is on"
-            color: Theme.petalFill
+            // Advisory, not an accent and not a failure: warm enough to catch
+            // the eye without claiming the petal colour, which on this panel
+            // means "this is the thing to act on".
+            color: Theme.petalLight
             font.pixelSize: 11
             font.letterSpacing: 1.4
-            opacity: (root.keyboardState && root.keyboardState.capsLock) ? 0.85 : 0
+            opacity: (root.keyboardState && root.keyboardState.capsLock) ? 0.8 : 0
             Behavior on opacity { NumberAnimation { duration: Theme.fast } }
         }
 
         Button {
             id: go
             Layout.fillWidth: true
+            Layout.topMargin: 7
             Layout.preferredHeight: 44
             enabled: !root.busy && password.text.length > 0
-            text: root.busy ? "—" : "BANKAI"
 
-            contentItem: Text {
-                text: go.text
-                color: go.enabled ? Theme.petalLight : Theme.muted
-                font.pixelSize: 15
-                font.bold: true
-                font.letterSpacing: 4.5
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
-                opacity: go.enabled ? 1.0 : 0.4
+            // Busy is three dots running, not a dash. A dash reads as an
+            // em-rule someone left in the string, and the button also has to
+            // stop looking disabled while it waits -- it is working, and the
+            // disabled treatment says the opposite.
+            contentItem: Item {
+                Text {
+                    anchors.centerIn: parent
+                    text: "BANKAI"
+                    color: go.enabled ? Theme.petalLight : Theme.muted
+                    font.pixelSize: 15
+                    font.bold: true
+                    font.letterSpacing: 4.5
+                    opacity: root.busy ? 0 : (go.enabled ? 1.0 : 0.4)
+                    Behavior on opacity { NumberAnimation { duration: Theme.fast } }
+                }
+
+                Row {
+                    anchors.centerIn: parent
+                    spacing: 7
+                    opacity: root.busy ? 1 : 0
+                    Behavior on opacity { NumberAnimation { duration: Theme.fast } }
+
+                    Repeater {
+                        model: 3
+                        Rectangle {
+                            required property int index
+                            width: 5; height: 5; radius: 2.5
+                            color: Theme.petalLight
+                            opacity: 0.25
+                            SequentialAnimation on opacity {
+                                running: root.busy
+                                loops: Animation.Infinite
+                                PauseAnimation { duration: index * 170 }
+                                NumberAnimation { to: 1.0; duration: 230 }
+                                NumberAnimation { to: 0.25; duration: 230 }
+                                PauseAnimation { duration: (2 - index) * 170 }
+                            }
+                        }
+                    }
+                }
             }
 
             background: Rectangle {
                 radius: 9
                 color: go.pressed ? Theme.deep
-                     : go.hovered ? Qt.rgba(Theme.glow.r, Theme.glow.g, Theme.glow.b, 0.34)
-                                  : Qt.rgba(Theme.glow.r, Theme.glow.g, Theme.glow.b, 0.16)
+                     : (go.hovered || root.busy)
+                       ? Qt.rgba(Theme.glow.r, Theme.glow.g, Theme.glow.b, 0.34)
+                       : Qt.rgba(Theme.glow.r, Theme.glow.g, Theme.glow.b, 0.16)
                 border.width: 1
                 border.color: Qt.rgba(Theme.glow.r, Theme.glow.g, Theme.glow.b,
-                                      go.enabled ? 0.75 : 0.18)
+                                      (go.enabled || root.busy) ? 0.75 : 0.18)
                 Behavior on color { ColorAnimation { duration: Theme.fast } }
+                Behavior on border.color { ColorAnimation { duration: Theme.fast } }
             }
 
             onClicked: root.submit()
         }
 
+        // Two lines held open. A failure message that grows the panel moves
+        // the field it is about, which is the wrong thing to do to someone
+        // who has just been told to type it again.
         Text {
             Layout.fillWidth: true
+            Layout.topMargin: 9
+            Layout.preferredHeight: 30
             horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignTop
             text: root.message
             color: Theme.danger
             font.pixelSize: 12
+            font.letterSpacing: 0.4
             wrapMode: Text.WordWrap
             opacity: root.message.length > 0 ? 1 : 0
             Behavior on opacity { NumberAnimation { duration: Theme.normal } }

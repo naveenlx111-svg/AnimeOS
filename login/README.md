@@ -39,6 +39,7 @@ to leave Byakuya standing in the dark, waiting.
 | `Login.qml` | the panel; takes SDDM's objects as properties so it can run standalone |
 | `SystemBar.qml` | session picker (left) and suspend / restart / shut down (right) |
 | `GlyphButton.qml` | small circular icon button; icons drawn with Canvas, not a font |
+| `ByakuyaMark.qml` | the mark above the password field; Canvas paths, not a font or an SVG |
 | `Theme.qml` | palette and timing, shared with the Blender VFX values |
 
 ## Previewing without logging out
