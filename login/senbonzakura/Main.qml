@@ -30,13 +30,6 @@ Rectangle {
         onFinished: root.ready = true
     }
 
-    PetalField {
-        anchors.fill: parent
-        active: root.ready && !root.authenticated
-        opacity: root.ready ? 1 : 0
-        Behavior on opacity { NumberAnimation { duration: Theme.slow } }
-    }
-
     Login {
         id: login
         anchors.horizontalCenter: parent.horizontalCenter
@@ -135,10 +128,27 @@ Rectangle {
         onTriggered: triggered = true
     }
 
+    // The skip is armed a beat after the window maps, not immediately.
+    //
+    // Running windowed on a live desktop the greeter has been seen taking a
+    // stray event as it maps and skipping the sequence inside a second, with
+    // nothing logged; under the offscreen platform, which has no input path at
+    // all, the same build plays the full 21.5s. That points at a real event
+    // rather than a logic fault. Nobody decides to skip inside the first
+    // three-quarters of a second anyway, so the guard costs nothing and the
+    // thing it protects is the entire opening.
+    Timer {
+        id: skipArm
+        interval: 800
+        running: true
+        property bool armed: false
+        onTriggered: armed = true
+    }
+
     // Skip on any input while the sequence is running.
     MouseArea {
         anchors.fill: parent
-        enabled: !root.ready
+        enabled: !root.ready && skipArm.armed
         onClicked: backdrop.skip()
     }
 
@@ -146,16 +156,23 @@ Rectangle {
         anchors.fill: parent
         focus: !root.ready
         Keys.onPressed: function(event) {
+            if (!skipArm.armed)
+                return
             backdrop.skip()
             event.accepted = true
         }
     }
 
+    // The way in is a fade; the way out is not. The moment the password is
+    // accepted this goes opaque in one frame, so the greeter is simply gone
+    // rather than bowing out over half a second -- the session is already
+    // starting behind it, and a send-off there is just a delay in costume.
+    // Everything under it keeps its entrance Behaviors, which no longer show:
+    // they run out of sight beneath an already-black screen.
     Rectangle {
         anchors.fill: parent
         color: "black"
-        opacity: root.authenticated ? 1 : 0
-        Behavior on opacity { NumberAnimation { duration: Theme.slow } }
+        visible: root.authenticated
     }
 
     Connections {

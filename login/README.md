@@ -39,8 +39,6 @@ to leave Byakuya standing in the dark, waiting.
 | `Login.qml` | the panel; takes SDDM's objects as properties so it can run standalone |
 | `SystemBar.qml` | session picker (left) and suspend / restart / shut down (right) |
 | `GlyphButton.qml` | small circular icon button; icons drawn with Canvas, not a font |
-| `PetalField.qml` | three depth bands of drifting petals |
-| `Petal.qml` | one petal: vector silhouette plus a baked glow |
 | `Theme.qml` | palette and timing, shared with the Blender VFX values |
 
 ## Previewing without logging out
@@ -96,6 +94,4 @@ filled / caps-lock state, set `typed` and `capsOn` at the top of `grab.qml`.
   starts the session; the petals-clear-into-KDE transition does not exist.
 - The sequence is the 17s cut, which is a long wait on a busy morning. It is
   skippable, but the cut itself probably wants trimming.
-- Petal art is the existing five SVGs; they read more like feathers than
-  sakura at small sizes.
 - Multi-user switching is wired but untested -- this machine has one account.
