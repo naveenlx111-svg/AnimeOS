@@ -61,7 +61,18 @@ SHOTS = ['shot01_release', 'shot02_sink', 'shot03_bankai', 'shot04_declare',
 HOLD_SHOT = 'shot03_bankai'
 HOLD_FRAMES = 42
 PETAL_SHOT = 'shot07_wall'
-PETAL_OPACITY = 0.30
+# The idle loop uses its OWN matte, not the one the reveal uses. The reveal
+# wants the whole storm; the login wants only what looks good held under a
+# password field for as long as someone takes to type. Built with --no-core so
+# the bright jets are not forced opaque -- laid over a near-black hold at low
+# opacity they came through as grey vertical smears, swinging the frame's
+# column brightness from 12 to 92 -- and with --open 2, which drops anything
+# too thin to read as a blossom. A one-pixel speck at low opacity is not a
+# petal, it is dirt on the screen, and the frame fills with grey dust.
+PETAL_DIR = 'matte_packed_idle'
+# Higher than it was, because there is far less of it now: coverage fell from
+# 15-35% of frame to 14-19% once the jets and specks went.
+PETAL_OPACITY = 0.46
 
 
 def build_sequence():
@@ -86,9 +97,11 @@ def build_sequence():
 
 def build_idle():
     hold = sorted((ROOT / 'shots' / HOLD_SHOT / 'plate').glob('*.png'))[:HOLD_FRAMES]
-    petal = sorted((ROOT / 'shots' / PETAL_SHOT / 'matte_packed').glob('*.png'))
+    petal = sorted((ROOT / 'shots' / PETAL_SHOT / PETAL_DIR).glob('*.png'))
     if not petal:
-        sys.exit('no matte frames; run tools/matte.py first')
+        sys.exit(f'no matte frames in {PETAL_DIR}; run:\n'
+                 f'  tools/matte.py {PETAL_SHOT} --out /dev/null '
+                 f'--no-core --open 2 --tag _idle')
 
     # Both layers ping-pong over the same number of frames, which is what makes
     # the loop seamless -- the last frame is the first frame's neighbour.
@@ -134,8 +147,15 @@ def build_idle():
 
 
 if __name__ == '__main__':
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--idle-only', action='store_true',
+                    help='rebuild just the loop; leaves sequence.mp4 and its audio alone')
+    a = ap.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
     build_idle()
+    if a.idle_only:
+        raise SystemExit(0)
     build_sequence()
     # Muxes into sequence.mp4 without touching the video stream, so it has to
     # follow the encode rather than being folded into it.

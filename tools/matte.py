@@ -39,12 +39,39 @@ def box_blur(x, r):
             / ((2 * r + 1) ** 2))
 
 
-def matte(rgb, radius, lo, hi, core_lo, core_hi):
+def _erode(a, r):
+    o = a
+    for _ in range(r):
+        p = np.pad(o, 1, mode='edge')
+        o = np.minimum.reduce([p[1:-1, 1:-1], p[:-2, 1:-1], p[2:, 1:-1],
+                               p[1:-1, :-2], p[1:-1, 2:]])
+    return o
+
+
+def _dilate(a, r):
+    o = a
+    for _ in range(r):
+        p = np.pad(o, 1, mode='edge')
+        o = np.maximum.reduce([p[1:-1, 1:-1], p[:-2, 1:-1], p[2:, 1:-1],
+                               p[1:-1, :-2], p[1:-1, 2:]])
+    return o
+
+
+def matte(rgb, radius, lo, hi, core_lo, core_hi, open_r=0):
     L = rgb.max(axis=2)
     hp = L - box_blur(L, radius)
     a = np.clip((hp - lo) / (hi - lo), 0.0, 1.0)
-    core = np.clip((L - core_lo) / (core_hi - core_lo), 0.0, 1.0)
-    return np.maximum(a, core)
+    if core_hi > core_lo:
+        core = np.clip((L - core_lo) / (core_hi - core_lo), 0.0, 1.0)
+        a = np.maximum(a, core)
+    if open_r:
+        # Morphological opening: erode then dilate back. Whatever is thinner
+        # than the radius does not survive the erosion. Over a near-black
+        # backdrop at low opacity a one-pixel speck does not read as a petal,
+        # it reads as sensor dirt, and the frame fills with grey dust. This
+        # keeps the blossoms and drops the dust.
+        a = _dilate(_erode(a, open_r), open_r)
+    return a
 
 
 def main():
@@ -58,6 +85,12 @@ def main():
     ap.add_argument('--core-lo', type=float, default=0.80)
     ap.add_argument('--core-hi', type=float, default=0.97)
     ap.add_argument('--fps', type=int, default=24)
+    ap.add_argument('--open', type=int, default=0,
+                    help='drop specks thinner than this radius (morphological opening)')
+    ap.add_argument('--no-core', action='store_true',
+                    help='do not force the bright jets opaque; keeps only discrete petals')
+    ap.add_argument('--tag', default='',
+                    help='suffix for the frame directory, to keep two mattes side by side')
     ap.add_argument('--mask-logo', action='store_true', default=True,
                     help='force the watermark corner transparent (default on)')
     args = ap.parse_args()
@@ -67,7 +100,9 @@ def main():
     if not frames:
         sys.exit(f'no plate at {src}')
 
-    tmp = ROOT / 'shots' / args.shot / 'matte_packed'
+    if args.no_core:
+        args.core_lo, args.core_hi = 1.0, 1.0      # disables the core term
+    tmp = ROOT / 'shots' / args.shot / ('matte_packed' + args.tag)
     tmp.mkdir(exist_ok=True)
     for f in tmp.glob('*.png'):
         f.unlink()
@@ -75,7 +110,8 @@ def main():
     cov = []
     for i, f in enumerate(frames):
         rgb = np.asarray(Image.open(f).convert('RGB')).astype(np.float32) / 255.0
-        a = matte(rgb, args.radius, args.lo, args.hi, args.core_lo, args.core_hi)
+        a = matte(rgb, args.radius, args.lo, args.hi, args.core_lo, args.core_hi,
+                  args.open)
         if args.mask_logo:
             # The un-composite leaves a few DN of residual in the logo corner,
             # and a high-pass is exactly the operator that would amplify it
