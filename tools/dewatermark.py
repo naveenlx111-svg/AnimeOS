@@ -132,6 +132,45 @@ def unblend(img):
     return img
 
 
+
+def _edge_band():
+    """The glyph outlines: where the alpha map has a gradient.
+
+    The bulk of each glyph inverts cleanly, but its anti-aliased rim does not.
+    There alpha is partial and the source frame carries h.264 ringing from
+    being encoded *after* the logo was composited on, so the information needed
+    to invert it is not in the file any more. What is left is a thin outline
+    that a sharpening pass then finds and amplifies, because a sharpener is
+    precisely an edge detector. Measured as high-frequency energy relative to
+    the content beside it, that band sits at 2.6x.
+    """
+    _, alpha = load()
+    a = alpha.mean(axis=2)
+    gy, gx = np.gradient(a)
+    band = np.hypot(gx, gy) > 0.004
+    p = np.pad(band, 1)
+    return (p[1:-1, 1:-1] | p[:-2, 1:-1] | p[2:, 1:-1]
+            | p[1:-1, :-2] | p[1:-1, 2:])
+
+
+def polish(img):
+    """Median the glyph outlines away. img is float RGB, edited in place.
+
+    A 3x3 median over that band alone brings it to 1.23x -- near enough to its
+    surroundings to disappear. It is a real edit rather than a recovery, but it
+    is confined to a 190x40 corner, and smoothing three pixels of a petal storm
+    is invisible in a way that a dark outline of the word "animepahe" is not.
+    """
+    band = _edge_band()
+    h, w = band.shape
+    roi = img[:h, :w]
+    st = np.stack([np.roll(np.roll(roi, dy, 0), dx, 1)
+                   for dy in (-1, 0, 1) for dx in (-1, 0, 1)])
+    med = np.median(st, axis=0)
+    roi[band] = med[band]
+    return img
+
+
 def cmd_apply(args):
     from PIL import Image
     d = Path(args.dir)
@@ -149,10 +188,30 @@ def cmd_apply(args):
         # Write beside the frame and rename, so an interrupted run leaves the
         # original intact rather than a half-written PNG.
         tmp = p.with_suffix('.tmp.png')
-        Image.fromarray(unblend(im).round().astype(np.uint8)).save(tmp)
+        Image.fromarray(polish(unblend(im)).round().astype(np.uint8)).save(tmp)
         tmp.replace(p)
     done.touch()
     print(f'de-watermarked {len(frames)} frames in {d}')
+
+
+
+def cmd_polish(args):
+    from PIL import Image
+    d = Path(args.dir)
+    done = d / '.polished'
+    if done.exists() and not args.force:
+        print(f'{d} already polished (--force to redo)')
+        return
+    frames = sorted(d.glob('*.png'))
+    if not frames:
+        sys.exit(f'no PNGs in {d}')
+    for p in frames:
+        im = np.asarray(Image.open(p).convert('RGB')).astype(np.float32)
+        tmp = p.with_suffix('.tmp.png')
+        Image.fromarray(polish(im).round().astype(np.uint8)).save(tmp)
+        tmp.replace(p)
+    done.touch()
+    print(f'polished {len(frames)} frames in {d}')
 
 
 def main():
@@ -163,6 +222,8 @@ def main():
     s.add_argument('--fps', default='2'); s.set_defaults(func=cmd_solve)
     a = sub.add_parser('apply'); a.add_argument('dir')
     a.add_argument('--force', action='store_true'); a.set_defaults(func=cmd_apply)
+    q = sub.add_parser('polish'); q.add_argument('dir')
+    q.add_argument('--force', action='store_true'); q.set_defaults(func=cmd_polish)
     args = ap.parse_args(); args.func(args)
 
 

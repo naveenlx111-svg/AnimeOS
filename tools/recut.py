@@ -48,7 +48,8 @@ def main():
         run(cmd, args.dry_run)
 
         # Un-composite the watermark while the frame is still untouched: the
-        # calibration is tied to the logo's position in the original pixels.
+        # calibration is tied to the logo's position in the original pixels,
+        # so this has to run before any reframe moves or resizes them.
         run([sys.executable, str(ROOT / 'tools' / 'dewatermark.py'), 'apply',
              str(ROOT / 'shots' / s['name'] / 'plate'), '--force'], args.dry_run)
 

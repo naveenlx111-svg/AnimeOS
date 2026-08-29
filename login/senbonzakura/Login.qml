@@ -78,11 +78,21 @@ FocusScope {
         id: panel
         anchors.fill: parent
         radius: Theme.radius
-        color: Qt.rgba(Theme.panel.r, Theme.panel.g, Theme.panel.b, 0.84)
         border.width: 1
-        border.color: Qt.rgba(Theme.petalFill.r, Theme.petalFill.g,
-                              Theme.petalFill.b, root.busy ? 0.9 : 0.4)
+        // Blade, not petal. The panel has to keep its shape while a full-frame
+        // magenta wash passes behind it, and a pink edge disappears into that.
+        border.color: Qt.rgba(Theme.rim.r, Theme.rim.g, Theme.rim.b,
+                              root.busy ? 0.75 : 0.34)
         Behavior on border.color { ColorAnimation { duration: Theme.normal } }
+
+        // Denser at the bottom, so the panel sits into the dark rather than
+        // floating on it.
+        gradient: Gradient {
+            GradientStop { position: 0.0
+                color: Qt.rgba(Theme.panel.r, Theme.panel.g, Theme.panel.b, 0.80) }
+            GradientStop { position: 1.0
+                color: Qt.rgba(Theme.abyss.r, Theme.abyss.g, Theme.abyss.b, 0.90) }
+        }
 
         // A single soft inner edge rather than a drop shadow: it matches the
         // way the blades in the footage read, which is all rim and no body.
@@ -92,8 +102,15 @@ FocusScope {
             radius: parent.radius - 1
             color: "transparent"
             border.width: 1
-            border.color: Qt.rgba(Theme.petalLight.r, Theme.petalLight.g,
-                                  Theme.petalLight.b, 0.07)
+            border.color: Qt.rgba(Theme.blade.r, Theme.blade.g, Theme.blade.b, 0.08)
+        }
+
+        // The lit top edge every blade in the sequence has.
+        Rectangle {
+            anchors { left: parent.left; right: parent.right; top: parent.top }
+            anchors.margins: Theme.radius
+            height: 1
+            color: Qt.rgba(Theme.blade.r, Theme.blade.g, Theme.blade.b, 0.22)
         }
     }
 
@@ -120,10 +137,10 @@ FocusScope {
             Rectangle {
                 anchors.fill: parent
                 radius: width / 2
-                color: Qt.rgba(Theme.glow.r, Theme.glow.g, Theme.glow.b, 0.10)
+                color: Qt.rgba(Theme.petalDeep.r, Theme.petalDeep.g,
+                               Theme.petalDeep.b, 0.22)
                 border.width: 1
-                border.color: Qt.rgba(Theme.petalFill.r, Theme.petalFill.g,
-                                      Theme.petalFill.b, 0.45)
+                border.color: Qt.rgba(Theme.rim.r, Theme.rim.g, Theme.rim.b, 0.40)
             }
 
             Text {
@@ -165,7 +182,7 @@ FocusScope {
         Text {
             Layout.fillWidth: true
             horizontalAlignment: Text.AlignHCenter
-            text: "Kuchiki Byakuya awaits"
+            text: "SENBONZAKURA KAGEYOSHI"
             color: Theme.muted
             font.pixelSize: 11
             font.letterSpacing: 2.6
@@ -194,12 +211,13 @@ FocusScope {
 
             background: Rectangle {
                 radius: 9
-                color: Qt.rgba(0, 0, 0, 0.38)
+                color: Qt.rgba(Theme.abyss.r, Theme.abyss.g, Theme.abyss.b, 0.62)
                 border.width: 1
+                // Resting state is blade; focus is the one moment the petal
+                // colour is worth spending, because it marks where to type.
                 border.color: password.activeFocus
                               ? Theme.glow
-                              : Qt.rgba(Theme.petalFill.r, Theme.petalFill.g,
-                                        Theme.petalFill.b, 0.28)
+                              : Qt.rgba(Theme.rim.r, Theme.rim.g, Theme.rim.b, 0.26)
                 Behavior on border.color { ColorAnimation { duration: Theme.fast } }
             }
 
