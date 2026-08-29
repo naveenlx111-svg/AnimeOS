@@ -1,20 +1,84 @@
 {
   "_comment": "The cut list, as data. Re-derive against a new source with tools/recut.py.",
-  "source": "assets/footage/byakuya_tybw_edit.mp4",
+  "source": "assets/footage/bleach_tybw_ep04.mp4",
+  "source_note": "Bleach: Thousand-Year Blood War ep.04 'Kill The Shadow', 1920x1080 23.976. The Bankai runs 784.30-805.76s (13:04-13:26). Cut points came from tools/probe_cuts.py scene detection, not by eye.",
   "fps": 24,
-  "resolution": [1920, 1080],
-  "crop_note": "crop is W:H:X:Y applied before scaling; null means the source is already 16:9 and needs none",
+  "resolution": [
+    1920,
+    1080
+  ],
+  "crop_note": "The source is already 1920x1080 16:9, so no shot is cropped or scaled: every plate is the original pixels 1:1. The panel this plays on is 1920x1080, so that is also the delivery size.",
+  "watermark": "animepahe logo, alpha-composited top-left. Removed by inverting the blend -- see tools/dewatermark.py.",
   "shots": [
-    {"name": "shot01_release",      "start": 0.0,    "duration": 1.033, "crop": "1080:608:0:480"},
-    {"name": "shot02_sink",         "start": 1.033,  "duration": 2.500, "crop": "1080:608:0:580"},
-    {"name": "shot03_swords",       "start": 3.533,  "duration": 6.000, "crop": "1080:608:0:592"},
-    {"name": "shot04_declaration",  "start": 9.533,  "duration": 3.100, "crop": "1080:608:0:350",
-     "keep": "1-23,68-74"},
-    {"name": "shot05_eruption",     "start": 12.633, "duration": 1.642, "crop": "1080:608:0:500"},
-    {"name": "shot06_storm",        "start": 14.275, "duration": 4.625, "crop": "1080:608:0:500"}
+    {
+      "name": "shot01_release",
+      "start": 784.3,
+      "duration": 1.11,
+      "beat": "the hand opens and lets the sword fall"
+    },
+    {
+      "name": "shot02_sink",
+      "start": 785.41,
+      "duration": 2.5,
+      "beat": "the blade touches stone and rings out in circles"
+    },
+    {
+      "name": "shot03_bankai",
+      "start": 787.91,
+      "duration": 6.01,
+      "beat": "black; a small figure; the blade rows rise into wings"
+    },
+    {
+      "name": "shot04_declare",
+      "start": 793.92,
+      "duration": 3.0,
+      "beat": "Byakuya, close, naming it",
+      "reframe": "1920:960:0:0",
+      "reframe_why": "the burned-in 'Senbonzakura Kageyoshi...' subtitle sits on rows 968-1048, on his moving haori, so there is no clean plate to borrow from. Cropping above it and pushing in 1.125x removes it with no invented pixels, and tightens the close-up while it is at it."
+    },
+    {
+      "name": "shot05_firstjet",
+      "start": 796.92,
+      "duration": 1.71,
+      "beat": "one jet of petals breaks upward"
+    },
+    {
+      "name": "shot06_columns",
+      "start": 798.63,
+      "duration": 1.38,
+      "beat": "columns of petals erupt"
+    },
+    {
+      "name": "shot07_wall",
+      "start": 800.01,
+      "duration": 1.75,
+      "beat": "the storm fills frame"
+    },
+    {
+      "name": "shot08_arcs",
+      "start": 801.76,
+      "duration": 1.5,
+      "beat": "blades arc over the storm"
+    },
+    {
+      "name": "shot09_stand",
+      "start": 803.26,
+      "duration": 2.5,
+      "beat": "he stands inside it; the hold the login lands on"
+    }
   ],
   "detext": [
-    {"shot": "shot03_swords", "mode": "plate", "rect": "440,160,1490,390",
-     "clean": "1-8,34-60", "frames": "9-32"}
+    {
+      "shot": "shot03_bankai",
+      "mode": "plate",
+      "rect": "812,966,1112,1080",
+      "clean": "1-12,38-70",
+      "frames": "13-37",
+      "why": "the 'Bankai...' subtitle. This shot is a held near-black frame -- frames 13 and 37 differ by 0.53 DN over the whole picture -- so the covered region can be rebuilt exactly from the frames either side instead of being inpainted."
+    }
+  ],
+  "pipeline": [
+    "tools/recut.py runs: cut (native, no scaling) -> dewatermark -> reframe -> detext -> assemble",
+    "dewatermark must precede reframe: the logo calibration is tied to its position in the untouched frame"
   ]
 }

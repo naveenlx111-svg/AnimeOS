@@ -43,7 +43,18 @@ def main():
                '--start', str(s['start']), '--duration', str(s['duration'])]
         if s.get('crop'):
             cmd += ['--crop', s['crop']]
+        if s.get('fill'):
+            cmd += ['--fill']
         run(cmd, args.dry_run)
+
+        # Un-composite the watermark while the frame is still untouched: the
+        # calibration is tied to the logo's position in the original pixels.
+        run([sys.executable, str(ROOT / 'tools' / 'dewatermark.py'), 'apply',
+             str(ROOT / 'shots' / s['name'] / 'plate'), '--force'], args.dry_run)
+
+        if s.get('reframe'):
+            run([sys.executable, str(ROOT / 'tools' / 'ingest.py'), 'reframe',
+                 s['name'], '--crop', s['reframe']], args.dry_run)
 
     for d in cfg.get('detext', []):
         cmd = [sys.executable, str(ROOT / 'tools' / 'detext.py'), d['shot']]
