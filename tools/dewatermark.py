@@ -89,6 +89,27 @@ def cmd_solve(args):
     print(f'{len(ests)} flat bright frames -> L = {np.round(L, 1)}  iqr {np.round(lo,1)}..{np.round(hi,1)}')
 
     alpha = np.clip(P / L, 0.0, 0.95)
+
+    # Refine P against every dark frame, not just the perfectly black ones.
+    # Only 27 frames fade to true black, and at the glyphs' anti-aliased edges
+    # the premultiplied value is 1-5 DN -- the same size as the quantisation
+    # noise in a 27-sample median. That leaves a faint outline behind after the
+    # un-composite. Frames whose corner is merely dark can be used too by
+    # subtracting what the background contributes, which brings the sample
+    # count up by an order of magnitude and settles those edges.
+    # "Dark" has to mean dark *behind the logo*, judged on the box's own
+    # non-glyph pixels. Testing a strip beside the logo instead lets through
+    # frames that are dark at the edge and bright under the glyphs, and those
+    # inflate P badly enough to push alpha past 0.8.
+    off = a[:, ~glyph]
+    dark = np.where((off.mean(axis=(1, 2)) < 6.0) & (off.std(axis=(1, 2)) < 6.0))[0]
+    if len(dark) > len(black):
+        bg = off[dark].mean(axis=(1, 2))[:, None, None, None]
+        P = np.median(a[dark] - (1.0 - alpha) * bg, axis=0)
+        alpha = np.clip(P / L, 0.0, 0.95)
+        print(f'refined P over {len(dark)} dark frames (was {len(black)}), '
+              f'max alpha now {alpha.max():.3f}')
+
     np.savez(CAL, P=P, L=L, alpha=alpha)
     print(f'wrote {CAL.relative_to(ROOT)}  max alpha {alpha.max():.3f}')
 

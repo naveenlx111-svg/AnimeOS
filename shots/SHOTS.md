@@ -1,107 +1,91 @@
 # Sequence
 
-Six shots cut from `assets/footage/byakuya_tybw_edit.mp4`, 409 frames / 17.04s
-at 24fps, 1920x1080. The fan edit's burned-in titles are removed.
+Nine shots cut from `assets/footage/bleach_tybw_ep04.mp4` -- Bleach: Thousand-
+Year Blood War ep.04, "Kill The Shadow" -- 517 frames / 21.54s at 24fps,
+1920x1080. The Bankai runs 784.30-805.76s (13:04-13:26).
 
-| # | Shot | Source | Crop y | Frames | Content |
-|---|------|--------|--------|--------|---------|
-| 1 | shot01_release     | 0.000-1.033  | 480 | 25  | black, then the hand opens and the sword drops |
-| 2 | shot02_sink        | 1.033-3.533  | 580 | 60  | blade enters the floor, sinks, ripples settle |
-| 3 | shot03_swords      | 3.533-9.533  | 592 | 144 | BANKAI title; the two wings of blades rise into the V |
-| 4 | shot04_declaration | 9.533-12.633 | 350 | 30  | face close-up (title frames dropped) |
-| 5 | shot05_eruption    | 12.633-14.275| 500 | 39  | single light blade, petals erupt upward |
-| 6 | shot06_storm       | 14.275-18.900| 500 | 111 | petal columns, storm fills frame |
+| # | Shot | Source (s) | Frames | Beat |
+|---|------|-----------|--------|------|
+| 1 | shot01_release  | 784.30-785.41 | 27  | the hand opens and lets the sword fall |
+| 2 | shot02_sink     | 785.41-787.91 | 60  | the blade touches stone and rings out in circles |
+| 3 | shot03_bankai   | 787.91-793.92 | 145 | black; a small figure; the blade rows rise into wings |
+| 4 | shot04_declare  | 793.92-796.92 | 72  | Byakuya, close, naming it |
+| 5 | shot05_firstjet | 796.92-798.63 | 41  | one jet of petals breaks upward |
+| 6 | shot06_columns  | 798.63-800.01 | 34  | columns of petals erupt |
+| 7 | shot07_wall     | 800.01-801.76 | 42  | the storm fills frame |
+| 8 | shot08_arcs     | 801.76-803.26 | 36  | blades arc over the storm |
+| 9 | shot09_stand    | 803.26-805.76 | 60  | he stands inside it; the hold the login lands on |
 
-## Reframing
+Cut points come from `tools/probe_cuts.py` scene detection, not by eye.
 
-The source is a 1080x1440 vertical edit, so every shot is cropped to a
-1080x608 band and scaled up 1.78x. The band is chosen per shot: it has to hold
-the composition *and* sit clear of the burned-in "ANIME GALAXYZ" watermark at
-y 1200-1235.
+## No reframing
 
-Shot 3 is the one case where those two goals conflict — the watermark sits
-directly on Byakuya's chest. Cropping above it keeps his head and shoulders and
-the whole sword V, and loses his lower body. `delogo` was tried instead and
-left a visible smear band across the stripes, so the crop won.
+The earlier source was a fan edit: a 1.33x upscale of an ~810px vertical slice
+of a 16:9 original, which after its 608-tall crop band left each delivered
+frame resting on roughly 810x456 of real detail. That is where the softness
+came from, and no scaler fixes it.
 
-## Edges
+The broadcast source is a true 1920x1080 16:9, and the panel it plays on is
+also 1920x1080, so the whole crop-and-scale stage is gone: every plate is the
+original pixels 1:1. Only shot04 is reframed, and only to escape a subtitle.
 
-Cut points come from ffmpeg scene detection, then checked frame by frame:
+23.976 is retimed to 24 by stretching timestamps, not by resampling -- `fps=24`
+would duplicate one frame in every 42, which reads as a stutter on a slow push.
 
-- The clip opens on **two black frames** and a one-frame ramp. Kept — it is the
-  closest thing the footage has to "emerging from darkness", and it is real
-  source rather than something invented.
-- The 14.233s cut detection was one frame early; shot 6 began on the tail of
-  the eruption. Moved to 14.275s.
-- Shot 6 contains fast internal flashes that read as cuts to a detector. They
-  are one continuous effect and are left whole.
+## The two overlays
 
-## Rebuilding
+**The AnimePahe logo** is alpha-composited, not baked, so it can be inverted
+rather than inpainted -- the pixels underneath are still in the file, just
+washed toward white. `tools/dewatermark.py` solves the blend against the
+episode itself: the premultiplied colour comes off frames that fade to black,
+and L off frames whose corner is bright and flat. That gives L=254 with a
+per-pixel alpha peaking at 0.22, agreeing across 95 independent frames.
 
-The cut list lives in `shots/cuts.json`. Rebuild everything from it:
+Measured as the logo's excess luma over its own immediate surroundings, the
+523-frame window goes from +32.9 DN to under a quarter of a DN on most shots.
+The first solve left a faint outline: at the glyphs' anti-aliased edges the
+premultiplied value is 1-5 DN, the same size as the quantisation noise in a
+27-frame median. Refining it over 83 dark frames -- subtracting what the
+background contributes rather than requiring pure black -- settles those edges.
 
-    tools/recut.py                    # or --source <newclip> --dry-run
+**The subtitles** needed two different answers.
 
-## Resolution ceiling
+*"Bankai..."* sits on a held near-black frame. Frames 13 and 37 differ by
+0.53 DN across the whole picture, so the covered region is rebuilt exactly
+from the frames either side. Nothing is invented.
 
-The current source cannot reach HD, let alone 4K, and this is a property of
-the footage rather than of the scaling.
+*"Senbonzakura Kageyoshi..."* sits on a moving haori -- its band animates at
+4-5 DN per frame -- so there is no clean plate to borrow from, and inpainting
+would break the gold trim and the tassel it crosses. That shot is cropped
+above the subtitle (rows 968-1048) and pushed in 1.125x instead. It invents no
+pixels, and it tightens the close-up while it is at it.
 
-A round-trip test (shrink, re-enlarge, measure the error) shows the fan edit
-loses almost nothing when reduced to 812x1082 (RMS 2.95). So it is itself an
-upscale: an ~810x1080 vertical slice taken out of a 16:9 original and blown up
-1.33x. After the 608-tall crop band, each delivered frame rests on roughly
-**810x456 of real detail**.
+Both verified by re-running the detector: worst score 3, against 6320 before.
 
-| Output | Upscale over real detail |
-|--------|--------------------------|
-| 1920x1080 | 2.37x |
-| 3840x2160 | 4.74x |
+## Grade
 
-The fix is a better source, not a better scaler. A 1080p broadcast source of
-the same scene carries about 5.6x more real detail and removes three separate
-compromises at once: the watermark that forced shot 3's crop, the burned-in
-titles that cost shot 4 its middle 43 frames, and the vertical reframing.
+Sharpen, then deband, then dither -- in that order, on the clean plate.
 
-When that source lands, re-derive the cut points with:
+Contrast Adaptive Sharpen rather than an unsharp mask: at matched strength
+unsharp pushes twice as many pixels to clip, which on line art is a halo down
+every contour. `cas=0.8` lifts high-frequency energy about 40% with clipping
+essentially unchanged.
 
-    tools/probe_cuts.py assets/footage/<clip> --start <t> --end <t>
+The deband is not cosmetic. The dark shots arrive from a 1.6 Mbit source with
+about six distinct luma levels across the near-black background, measuring as
+flat runs averaging 111 pixels -- visible contour rings, on a login screen that
+is mostly dark. Dithering breaks those runs to under two pixels.
 
-then update `shots/cuts.json` and run `tools/recut.py`. Timings and crops from
-the fan edit do not transfer: a different release has its own cut points, and
-a 16:9 source needs no crop at all.
+Delivered at CRF 14, not 18. The dither costs bitrate, and at 18 the encoder
+spends it by smoothing exactly the detail the sharpen just added: measured
+against the plate, CRF 18 keeps a laplacian of 3.02 where CRF 14 keeps 3.92.
+End to end the delivered frame carries 78% more high-frequency energy than the
+plate it came from.
 
-## Titles
+## Resolution
 
-The fan edit burned two titles into the picture. They are removed by
-`tools/detext.py`, which keeps the untouched original in `plate_raw/` so every
-pass is re-runnable.
-
-**BANKAI** (shot 3, frames 9-32) sat on flat, unmoving night sky. Measuring
-that region across the title-free frames gave a temporal standard deviation of
-2.4, so the background is effectively static and can simply be replaced with a
-median clean plate. Result is exact — zero residual glyph pixels.
-
-    tools/detext.py shot03_swords --plate --rect 440,160,1490,390 \
-        --clean 1-8,34-60 --frames 9-32
-
-**SENBONZAKURA KAGEYOSHI** (shot 4, frames 24-66) sat on Byakuya's face. Three
-methods were tried and rejected: ffmpeg `delogo` streaks wherever the box
-crosses his hair; masked inpainting works on the flat skin but turns to mush
-where it spans the hair edge; and a warped clean plate fails because the cel is
-animated, not a held zoom (best-fit correlation only 0.40). The glyphs also
-carry a dark neutral outline no colour test detects, which is what leaves grey
-ghosts behind.
-
-So the titled frames are dropped instead. The join was chosen by searching all
-head/tail pairs for the smallest difference:
-
-    tools/detext.py shot04_declaration --keep 1-23,68-74
-
-That join measures 26.8 against this shot's own natural frame-to-frame motion
-of 4.5-25.1, so it sits inside the movement the shot already has. The shot
-goes from 74 frames to 30.
-
-## Not yet done
-
-No VFX. Every shot is the plate as-cut.
+The panel is 1920x1080 and its highest mode is 1920x1080, so it cannot display
+4K. A 3840x2160 file would be downscaled by the compositor before it reached
+the glass -- four times the decode work on a login screen for nothing visible.
+The sharpness win came from the better source, the sharpen, and the bitrate,
+not from more pixels.
