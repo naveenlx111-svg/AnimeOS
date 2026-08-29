@@ -13,7 +13,7 @@ import QtQuick
 // edge-traced frame were both tried here first and both came out as scribble.
 //
 // The colours are mixes of the measured Theme tokens rather than new ones.
-// The palette has no skin and no paper white because the footage has neither:
+// The skin and haori tones are measured off his own close-up (see Theme):
 // the storm lights everything magenta, so the pale areas are pulled toward
 // blade lavender and the warm ones toward petal.
 Item {
@@ -33,10 +33,14 @@ Item {
         // Bound rather than computed once, so a palette change repaints
         // instead of silently sticking on the old mix.
         property color cHair:  mix(Theme.night, Theme.blade, 0.24)
-        property color cSkin:  mix(Theme.petalFill, Theme.blade, 0.62)
-        property color cHaori: Qt.lighter(Theme.blade, 1.12)
-        property color cPale:  Qt.lighter(Theme.blade, 1.26)
+        property color cSkin:  Theme.skin
+        property color cHaori: Theme.haori
+        property color cPale:  Qt.lighter(Theme.haori, 1.04)
         property color cDark:  mix(Theme.abyss, Theme.blade, 0.10)
+        // The eye is lifted off the robe's black on purpose. Against the warm
+        // face a pure-black wedge reads as a hole rather than a half-lidded
+        // look, and the whole expression is in that lid.
+        property color cEye:   mix(Theme.abyss, Theme.blade, 0.30)
         property color cRim:   Theme.rim
         property real  w: root.weight
 
@@ -202,7 +206,7 @@ Item {
                 g.bezierCurveTo(43.6, 46.0, 41.8, 47.4, 39.7, 47.4)
                 g.bezierCurveTo(37.6, 47.4, 35.6, 45.8, 35.4, 41)
                 g.closePath()
-                g.fillStyle = cDark
+                g.fillStyle = cEye
                 g.fill()
 
                 // One highlight each. Without it the eye is a flat wedge and
@@ -212,7 +216,7 @@ Item {
                 g.fillStyle = cPale
                 g.fill()
 
-                g.strokeStyle = cDark
+                g.strokeStyle = cEye
                 g.lineWidth = w * 2.0
                 g.beginPath()
                 g.moveTo(34.8, 40.4)

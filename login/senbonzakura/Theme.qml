@@ -24,6 +24,13 @@ QtObject {
     readonly property color petalLight: "#dd9dcd"   // petal, lit
     readonly property color petalDeep:  "#7b3b6a"   // petal, in shadow
     readonly property color blade:      "#d0c3de"   // the cool arcs
+    // His face and his haori, measured the same way off shot04_declare --
+    // 4.3M skin pixels and 1.4M haori pixels. Worth stating plainly because
+    // the first pass at the chibi assumed the footage had no skin tone in it
+    // and mixed one out of petal pink and blade lavender, which came out
+    // mauve and made him look ill rather than composed.
+    readonly property color skin:       "#eedbc8"
+    readonly property color haori:      "#f1ede5"
 
     // ---- lifted, so controls stay legible against the storm ----
     readonly property color glow:       "#ff5fb4"
