@@ -23,6 +23,10 @@ Item {
     function skip() {
         if (!sequenceDone) {
             sequence.stop()
+            // stop() ends the decode, but whatever the sink has already been
+            // handed keeps playing, and sound continuing over a login panel
+            // that has no picture behind it any more is worse than no sound.
+            seqAudio.muted = true
             root.sequenceDone = true
             root.finished()
         }
@@ -47,6 +51,9 @@ Item {
         fillMode: VideoOutput.PreserveAspectCrop
     }
 
+    // No audioOutput, deliberately: this loops for as long as the user takes
+    // to find their password, and a 3.5-second sting on repeat is a reason to
+    // pick a different theme. The file carries no audio stream either.
     MediaPlayer {
         id: hold
         source: "assets/video/idle_loop.mp4"
@@ -67,14 +74,40 @@ Item {
         id: sequence
         source: "assets/video/sequence.mp4"
         videoOutput: seqOut
+        audioOutput: AudioOutput {
+            id: seqAudio
+            // Not 1.0. This starts by itself the moment you sit down, before
+            // anyone has had the chance to reach for a volume key, and the
+            // mix is normalised to -18.6 LUFS. volume here is linear
+            // amplitude, so 0.6 is about -4.4 dB and lands the sequence near
+            // -23 LUFS: audible across a room, not an announcement.
+            volume: 0.6
+        }
         onMediaStatusChanged: {
             if (mediaStatus === MediaPlayer.EndOfMedia)
                 root.skip()
         }
         onErrorOccurred: function(err, str) {
-            console.warn("senbonzakura: sequence unavailable:", str)
-            root.skip()
+            console.warn("senbonzakura: sequence player error:", str)
+            // A greeter runs before any user session exists, so there may be
+            // no PipeWire, no sink, or a device that refuses to open, and the
+            // backend reports that on the player rather than on the audio
+            // output. Sound is the optional half of this: drop it and let the
+            // picture finish. Only skip if the picture died too.
+            sequence.audioOutput = null
+            if (sequence.playbackState !== MediaPlayer.PlayingState)
+                root.skip()
         }
+    }
+
+    // Last resort. Nothing in here may leave someone staring at a video with
+    // no password field: if the sequence has not reported EndOfMedia by the
+    // time it should have -- a stalled decoder, a backend that errors halfway
+    // through -- hand over to the login panel regardless.
+    Timer {
+        interval: 26000
+        running: !root.sequenceDone
+        onTriggered: root.skip()
     }
 
     Rectangle {

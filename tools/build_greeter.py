@@ -6,6 +6,10 @@
 `sequence.mp4` is the whole cut, played once when the greeter starts.
 `idle_loop.mp4` loops underneath for as long as the user takes to type.
 
+The sequence gets its soundtrack from tools/build_audio.py, which runs last
+because it muxes into the file this script writes. The idle loop stays silent
+on purpose -- see Background.qml.
+
 Both get a deband and a light temporal grain. That is not a stylistic choice:
 the dark shots arrive from a 1.6 Mbit source with about six distinct luma
 levels across the near-black background, which measures as flat runs averaging
@@ -133,3 +137,7 @@ if __name__ == '__main__':
     OUT.mkdir(parents=True, exist_ok=True)
     build_idle()
     build_sequence()
+    # Muxes into sequence.mp4 without touching the video stream, so it has to
+    # follow the encode rather than being folded into it.
+    subprocess.run([sys.executable, str(ROOT / 'tools' / 'build_audio.py')],
+                   check=True)
