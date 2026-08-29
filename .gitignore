@@ -22,3 +22,5 @@ shots/*/out/
 shots/review/
 
 shots/*/plate_raw/
+
+shots/*/matte_packed/

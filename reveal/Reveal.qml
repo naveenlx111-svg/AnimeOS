@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Window
+import QtMultimedia
 
 // AnimeOS - desktop reveal.
 //
@@ -8,6 +9,10 @@ import QtQuick.Window
 // no moment inside it where the desktop is behind the petals. Doing it here
 // means the reveal is genuine compositing over whatever is actually on screen,
 // not a pre-rendered guess at what the desktop looks like.
+//
+// The petals are the real ones -- matted out of the episode's own storm by
+// tools/matte.py -- rather than drawn shapes, so what dissolves here is the
+// same animation the login screen just finished playing.
 Window {
     id: win
 
@@ -19,46 +24,70 @@ Window {
            | Qt.WindowTransparentForInput      // never swallow the user's clicks
     visibility: Window.FullScreen
 
-    property int petalCount: 190
-    property int sweepMs: 1700
-    property int veilMs: 850
+    property int holdMs: 260      // full storm, before it starts breaking up
+    property int dissolveMs: 1500
+    property real progress: 0
 
-    // The veil starts as the tail of the greeter's storm and lifts, so the
-    // session does not simply pop into existence.
-    Rectangle {
-        id: veil
+    // The video carries colour and matte side by side. It is fed through a
+    // ShaderEffectSource rather than shown directly, because the shader has to
+    // sample the same frame twice -- once for each half.
+    MediaPlayer {
+        id: player
+        source: Qt.resolvedUrl("assets/petals.mp4")
+        videoOutput: sink
+        loops: MediaPlayer.Infinite
+        Component.onCompleted: play()
+    }
+
+    VideoOutput {
+        id: sink
         anchors.fill: parent
-        color: "#08030b"
-        opacity: 1
-        NumberAnimation on opacity {
-            from: 1; to: 0
-            duration: win.veilMs
-            easing.type: Easing.OutCubic
-            running: true
-        }
+        visible: false
+        fillMode: VideoOutput.Stretch
     }
 
-    Repeater {
-        model: win.petalCount
-        RevealPetal {
-            anchors.fill: undefined
-            parent: win.contentItem
-            angle: Math.random() * Math.PI * 2
-            startR: Math.random() * 240
-            endR: 900 + Math.random() * 1100
-            startScale: 0.35 + Math.random() * 0.7
-            endScale: 1.8 + Math.random() * 2.4
-            spin: (Math.random() < 0.5 ? -1 : 1) * (90 + Math.random() * 260)
-            span: win.sweepMs * (0.7 + Math.random() * 0.6)
-            hold: 0.15 + Math.random() * 0.3
-        }
+    ShaderEffectSource {
+        id: tex
+        sourceItem: sink
+        anchors.fill: parent
+        visible: false
+        live: true
+        hideSource: true
     }
 
-    // Quit once the longest petal has cleared, plus a beat. Leaving an
-    // always-on-top window alive after the animation would be worse than not
-    // having the animation at all.
+    ShaderEffect {
+        anchors.fill: parent
+        fragmentShader: Qt.resolvedUrl("shaders/petals.frag.qsb")
+        property variant source: tex
+        property real progress: win.progress
+        property real noiseScale: 7.0
+        property real grain: 0.85
+        // Sakura, not confetti: the petals that survive the dissolve are their
+        // white-hot cores, so they get pushed back toward blossom pink.
+        property real tintAmount: 0.85
+        property vector4d tint: Qt.vector4d(1.0, 0.62, 0.82, 1.0)
+        blending: true
+    }
+
+    SequentialAnimation {
+        running: true
+        PauseAnimation { duration: win.holdMs }
+        NumberAnimation {
+            target: win; property: "progress"
+            from: 0; to: 1
+            duration: win.dissolveMs
+            // Slow at first so the holes creep open, then quick at the end so
+            // it clears rather than lingering as a haze.
+            easing.type: Easing.InCubic
+        }
+        ScriptAction { script: Qt.quit() }
+    }
+
+    // A hard backstop. If the media never loads, or the animation is somehow
+    // never driven, an always-on-top window that stays alive is far worse than
+    // no reveal at all -- so quit regardless.
     Timer {
-        interval: win.sweepMs * 1.4 + 400
+        interval: win.holdMs + win.dissolveMs + 1500
         running: true
         onTriggered: Qt.quit()
     }
