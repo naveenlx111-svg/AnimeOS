@@ -19,9 +19,33 @@ import QtMultimedia
 Item {
     id: root
 
+    property int openMs: 260       // bloom up out of the handover's black
     property int holdMs: 1300      // storm plays (crescendo + settle) before clearing
     property int dissolveMs: 1600  // a slow scatter-away, not a snap
     property real progress: 0
+
+    // Starts black and blooms in, rather than snapping to a full storm.
+    //
+    // Between SDDM stopping and KWin starting there is a beat -- about a
+    // second on this machine -- where no compositor is presenting, so nothing
+    // can be drawn on screen at all. That black is not ours to remove; there
+    // is no client alive to remove it with. What is ours is what sits either
+    // side of it, and arriving at full density made the gap read as a
+    // dropout. Blooming out of black makes the same second read as the breath
+    // before the storm, which is what a dip to black has always been for.
+    //
+    // Kept short, and deliberately NOT added to holdMs: the video starts its
+    // own clock at load whether or not it is visible yet, and holdMs is tuned
+    // against that clock -- it clears while the storm is still moving, just
+    // before the source settles. Padding the hold by the lead-in would slide
+    // the dissolve past that settle frame and undo the tuning.
+    opacity: 0
+    NumberAnimation on opacity {
+        from: 0; to: 1
+        duration: root.openMs
+        easing.type: Easing.OutQuad
+        running: true
+    }
 
     // The video carries colour and matte side by side. It is fed through a
     // ShaderEffectSource rather than shown directly, because the shader has to
