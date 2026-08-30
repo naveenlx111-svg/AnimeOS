@@ -1,0 +1,13 @@
+[Unit]
+Description=AnimeOS Senbonzakura reveal
+PartOf=graphical-session.target
+After=plasma-kwin_wayland.service
+
+[Service]
+Type=oneshot
+# Adjust to wherever the reveal is installed (see LOG.md)
+ExecStart=/home/abhi/.local/share/animeos/reveal/reveal
+TimeoutSec=20
+
+[Install]
+WantedBy=graphical-session.target

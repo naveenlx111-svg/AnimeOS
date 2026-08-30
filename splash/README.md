@@ -1,4 +1,13 @@
-# AnimeOS splash
+# AnimeOS splash — SUPERSEDED
+
+**This approach is retired.** The KSplashQML mechanism proved fragile at a real
+boot (the org.kde.KSplash dbus activations failed with exit 1 at the 16:25
+boot, so the splash could silently not appear). The petal transition now runs
+through the reveal (`reveal/`) upgraded to a layer-shell overlay and started by
+the `animeos-reveal.service` user unit (see `LOG.md`). This file is kept as
+documentation of the attempt.
+
+---
 
 The Plasma splash (KSplashQML theme) that turns the login handoff into the
 Senbonzakura storm. It plays the same packed colour|matte petal video the SDDM

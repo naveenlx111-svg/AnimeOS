@@ -19,7 +19,7 @@ import QtMultimedia
 Item {
     id: root
 
-    property int holdMs: 260      // full storm, before it starts breaking up
+    property int holdMs: 2600      // storm held while the desktop comes up
     property int dissolveMs: 1500
     property real progress: 0
 

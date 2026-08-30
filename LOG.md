@@ -87,45 +87,47 @@ modified, the issues hit, and how things are configured on this machine
   ```
 - **Source footage is not committed** (gitignored); the built videos are.
 
-### Petal splash (native login→desktop transition) — DONE
+### Petal splash (native login→desktop transition) — DONE, THEN SUPERSEDED
 
-Replaced the Plasma splash (`KSplashQML`) with a custom look-and-feel package
-`splash/` in the repo, installed to
-`~/.local/share/plasma/look-and-feel/animeos-splash.desktop/`. Activated via
-`~/.config/ksplashrc`:
-```
-[KSplash]
-Engine=KSplashQML
-Theme=animeos-splash.desktop
-```
-The splash plays the packed petal storm (same colour|matte video + shader as
-the reveal) on every screen (KSplashQML opens one transparent layer-shell
-window per screen), fades in when the first frame decodes, and at stage 5
-(ksmserver/session-ready) fades the black backdrop out and dissolves the
-petals, revealing the desktop through the storm. Stage 6 closes the window.
-The `~/.config/autostart/animeos-reveal.desktop` reveal overlay was removed —
-the splash now owns the transition, so the old reveal would just double the
-petals. The `reveal/` C++ tool stays for manual testing.
+The KSplashQML splash (`splash/`, installed to `~/.local/share/plasma/
+look-and-feel/animeos-splash.desktop/`, `~/.config/ksplashrc`) rendered the
+storm correctly when run manually (both screens, dissolve verified), but the
+KSplashQML mechanism proved fragile at a real boot: at the 16:25 boot the
+org.kde.KSplash dbus activations all failed with exit 1 (the provider never
+registered), so the splash could silently not appear. It was also unverifiable
+between reboots.
 
-- Tested in KSplashQML test mode (`ksplashqml --test --nofork
-  animeos-splash.desktop`), which advances stages on a 2s timer: captured the
-  storm over black, then the handoff revealing the desktop (screenshot luma
-  jumps from ~26 to ~69, matching the desktop).
-- Stage semantics learned from the plasma-workspace source: 1 initial,
-  2 kcminit, 3 wm, 4 startPlasma, 5 ksmserver (ready), 6 desktop (exit).
-- Splash `console.log` output is swallowed by KSplashQML (PlasmaQuick engine),
-  so verify with screenshots instead.
-- **Dissolve reliability:** the stage-5 handoff signal is driven over DBus and
-  can silently fail to land if the provider isn't registered (seen at the
-  16:25 boot, where the KSplash dbus activations all failed with exit 1). The
-  splash now has a 9s fallback timer that runs the handoff regardless, so the
-  storm always clears. Verified the storm renders on both screens and the
-  dissolve reveals the desktop.
-- The splash is started by `plasma-ksplash.service` (ksplashqml, oneshot,
-  forks; the ~30s window auto-close is the hard backstop). In a manual
-  `systemctl --user start plasma-ksplash.service` there is no session driving
-  stages, so the storm holds until the fallback/auto-close -- that is expected,
-  not a bug.
+**Replaced with the reveal, upgraded to layer-shell, started by a systemd
+user service.** This is the decisive fix:
+
+- `reveal/main.cpp` now opens one **layer-shell overlay** window per screen
+  (LayerShellQt), so the compositor shows it above everything from the moment
+  it starts — no dependence on the desktop shell having loaded, no dbus stage
+  plumbing. That early-start reliability is exactly what KSplashQML lacked.
+- **`animeos-reveal.service`** (user unit, `After=plasma-kwin_wayland.service`,
+  `WantedBy=graphical-session.target`) starts the reveal as soon as the
+  compositor is up, so the petals appear while the desktop loads and dissolve
+  into it.
+- Assets are installed **local** (`~/.local/share/animeos/reveal/`) — no NTFS
+  read at session start.
+- Timing tuned for the boot context: storm held 2.6s, dissolve 1.5s, then the
+  app quits (hard 6s backstop).
+- The default KDE logo splash is blanked out (`ksplashrc` → the minimal
+  `animeos-blank.desktop` theme) so nothing competes with the reveal.
+
+Install (done on this machine, documented for re-install):
+```bash
+mkdir -p ~/.local/share/animeos/reveal
+cp -r reveal/* ~/.local/share/animeos/reveal/   # binary + Reveal.qml + assets + shaders
+cp ~/.config/systemd/user/animeos-reveal.service \
+   <repo>/systemd-user/animeos-reveal.service   # or write the unit
+systemctl --user daemon-reload
+systemctl --user enable animeos-reveal.service
+```
+
+Verified in-session: the service runs the reveal, petals render on both
+screens, exits clean (status 0), no warnings (fixed the `qmlEngine()`-vs-
+`view->engine()` quit wiring).
 
 ### Git housekeeping
 

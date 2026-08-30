@@ -1,20 +1,29 @@
 // AnimeOS - desktop reveal launcher.
 //
-// Runs once at session start, on top of the real desktop, with one window per
-// screen. The petals video is a 1920x1080 scene (packed colour|matte), so each
-// window plays it 1:1 on its own monitor; mirroring per screen keeps the petal
-// aspect correct and matches how the SDDM greeter itself is mirrored, so the
-// whole cinematic reads as one system-wide moment instead of a stretched one.
+// Runs once at session start, over the desktop, with one layer-shell overlay
+// window per screen. The petals video is a 1920x1080 scene (packed
+// colour|matte), so each window plays it 1:1 on its own monitor.
+//
+// A layer-shell overlay (rather than a plain window) is what makes this work
+// at session start: the compositor shows it above everything the moment the
+// reveal starts, with no dependence on the desktop shell having finished
+// loading -- the KSplashQML splash proved that early-start plumbing is where
+// the fragility lived. Started by animeos-reveal.service right after KWin.
 #include <QCoreApplication>
 #include <QGuiApplication>
 #include <QQmlEngine>
 #include <QQuickView>
 #include <QScreen>
 #include <QTimer>
-#include <cstdio>
+
+#include <LayerShellQt/Shell>
+#include <LayerShellQt/Window>
 
 int main(int argc, char *argv[])
 {
+    qputenv("QT_QPA_PLATFORM", "wayland");
+    LayerShellQt::Shell::useLayerShell();
+
     QGuiApplication app(argc, argv);
 
     const QUrl qmlFile = QUrl::fromLocalFile(
@@ -24,44 +33,36 @@ int main(int argc, char *argv[])
     for (QScreen *screen : QGuiApplication::screens()) {
         QQuickView *view = new QQuickView;
         view->setFlags(Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint
-                       | Qt::Tool | Qt::WindowTransparentForInput);
+                       | Qt::Tool);
         view->setColor(Qt::transparent);
+        view->setDefaultAlphaBuffer(true);
         view->setResizeMode(QQuickView::SizeRootObjectToView);
         view->setScreen(screen);
+        view->setGeometry(screen->geometry());
         view->setSource(qmlFile);
-        view->showFullScreen();
-        fprintf(stderr, "reveal: requested screen %s at %d,%d\n",
-                screen->name().toUtf8().constData(),
-                screen->geometry().x(), screen->geometry().y());
-        // KWin ignores the pre-map screen hint on Wayland and maps every new
-        // window to one output; re-applying the screen after the surface is
-        // mapped is what actually moves it.
-        QTimer::singleShot(400, view, [view, screen]() {
-            view->setScreen(screen);
-        });
-        if (QQmlEngine *engine = qmlEngine(view))
+
+        if (auto *layer = LayerShellQt::Window::get(view)) {
+            layer->setScope(QStringLiteral("animeos-reveal"));
+            layer->setLayer(LayerShellQt::Window::LayerOverlay);
+            layer->setExclusiveZone(-1);
+            layer->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityNone);
+            layer->setScreen(screen);
+        }
+
+        view->show();
+        // QQuickView::engine() is the engine that loaded the QML; qmlEngine()
+        // looks the engine up on a QML object and returns null for the window.
+        if (QQmlEngine *engine = view->engine())
             QObject::connect(engine, &QQmlEngine::quit,
                              &app, &QCoreApplication::quit);
         views.append(view);
     }
 
-    // Report where the compositor actually placed each window, so a window
-    // that lands on the wrong output is visible in the log instead of silent.
-    for (QQuickView *view : views) {
-        QTimer::singleShot(1200, view, [view]() {
-            const QScreen *s = view->screen();
-            fprintf(stderr, "reveal: view now on %s geometry %d,%d %dx%d\n",
-                    s ? s->name().toUtf8().constData() : "none",
-                    view->geometry().x(), view->geometry().y(),
-                    view->geometry().width(), view->geometry().height());
-        });
-    }
-
-    // Hard backstop, mirroring the QML timer: under QQuickView a QML
-    // Qt.quit() has been seen not to reach QCoreApplication, so an
-    // always-on-top window could otherwise outlive the animation. The
-    // dissolve is over long before this fires; anything left is transparent.
-    QTimer::singleShot(3500, &app, &QCoreApplication::quit);
+    // Hard backstop. If the media never loads, or the animation is somehow
+    // never driven, an always-on-top window that stays alive is far worse than
+    // no reveal at all -- so quit regardless. The dissolve is over long before
+    // this; anything left is transparent.
+    QTimer::singleShot(6000, &app, &QCoreApplication::quit);
 
     const int rc = app.exec();
     qDeleteAll(views);
