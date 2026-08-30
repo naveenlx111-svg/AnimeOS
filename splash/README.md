@@ -44,6 +44,9 @@ storm then the dissolve then the app exits. To revert, delete
 - At stage 5 the black backdrop fades out (the freshly-loaded desktop appears
   behind the storm), then the per-petal dissolve runs over ~0.9s, clearing the
   petals individually. Stage 6 closes the window; by then it is transparent.
+- A 9s fallback timer runs the handoff if stage 5 never arrives (the stage
+  signal is driven over DBus and can silently fail to land if the provider is
+  not registered), so the storm always clears instead of hanging.
 
 ## Files
 

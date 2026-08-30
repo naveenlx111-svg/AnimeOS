@@ -115,6 +115,17 @@ petals. The `reveal/` C++ tool stays for manual testing.
   2 kcminit, 3 wm, 4 startPlasma, 5 ksmserver (ready), 6 desktop (exit).
 - Splash `console.log` output is swallowed by KSplashQML (PlasmaQuick engine),
   so verify with screenshots instead.
+- **Dissolve reliability:** the stage-5 handoff signal is driven over DBus and
+  can silently fail to land if the provider isn't registered (seen at the
+  16:25 boot, where the KSplash dbus activations all failed with exit 1). The
+  splash now has a 9s fallback timer that runs the handoff regardless, so the
+  storm always clears. Verified the storm renders on both screens and the
+  dissolve reveals the desktop.
+- The splash is started by `plasma-ksplash.service` (ksplashqml, oneshot,
+  forks; the ~30s window auto-close is the hard backstop). In a manual
+  `systemctl --user start plasma-ksplash.service` there is no session driving
+  stages, so the storm holds until the fallback/auto-close -- that is expected,
+  not a bug.
 
 ### Git housekeeping
 

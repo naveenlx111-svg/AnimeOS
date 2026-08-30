@@ -29,6 +29,20 @@ Rectangle {
             handoff.running = true
     }
 
+    // Fallback: the stage-5 signal is driven over DBus by the session manager,
+    // and if the provider is not registered the call silently never lands. The
+    // storm must still clear, so dissolve regardless once the session has had
+    // time to come up. Anything earlier is a no-op because handoff runs once.
+    Timer {
+        id: fallback
+        interval: 9000
+        running: true
+        onTriggered: {
+            if (!handoff.running)
+                handoff.running = true
+        }
+    }
+
     // Solid backdrop while the session (and the desktop behind us) is still
     // settling. Faded out at handoff so the desktop shows through the storm.
     Rectangle {
