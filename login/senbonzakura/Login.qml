@@ -47,13 +47,22 @@ FocusScope {
     // dash forever and the field would stay disabled, locking the user out of
     // their own login screen.
     //
-    // Four seconds, not twelve. Twelve was chosen as a generous ceiling for a
-    // slow PAM stack, but it is far past the point where a dead button has
-    // already been read as broken: nothing comes back, so the only thing the
-    // wait buys is the user pressing Enter again into a disabled field.
+    // The interval has to clear the delay PAM deliberately imposes on a WRONG
+    // password, or this fires while a perfectly normal rejection is still in
+    // flight and reports "no response" for something that is about to answer
+    // "authentication failed" -- and the message visibly flips when the real
+    // one lands. FAIL_DELAY is 3s on this machine, and pam_unix's own default
+    // is 2s, so four seconds left only a second of margin: one slow disk or
+    // one probing module and the wrong message wins the race.
+    //
+    // Ten is clear of that and still recovers a wedged button long before
+    // anyone would start hunting for a TTY. The wait is not a dead one -- the
+    // button runs its dots throughout -- so the cost of erring long is small,
+    // where the cost of erring short is telling someone their login service
+    // is broken when they simply mistyped.
     Timer {
         id: stuck
-        interval: 4000
+        interval: 10000
         onTriggered: root.onFailed("No response from the login service")
     }
 
