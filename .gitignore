@@ -21,6 +21,10 @@ shots/*/out/
 
 shots/review/
 
+# Reveal C++ build artifacts
+reveal/build/
+reveal/reveal
+
 shots/*/plate_raw/
 
 shots/*/matte_packed*/

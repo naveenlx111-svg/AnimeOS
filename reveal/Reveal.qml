@@ -1,5 +1,4 @@
 import QtQuick
-import QtQuick.Window
 import QtMultimedia
 
 // AnimeOS - desktop reveal.
@@ -13,16 +12,12 @@ import QtMultimedia
 // The petals are the real ones -- matted out of the episode's own storm by
 // tools/matte.py -- rather than drawn shapes, so what dissolves here is the
 // same animation the login screen just finished playing.
-Window {
-    id: win
-
-    visible: true
-    color: "transparent"
-    flags: Qt.FramelessWindowHint
-           | Qt.WindowStaysOnTopHint
-           | Qt.Tool
-           | Qt.WindowTransparentForInput      // never swallow the user's clicks
-    visibility: Window.FullScreen
+//
+// The window is provided by main.cpp, which launches one of these per screen
+// so the petal scene renders 1:1 on every monitor (the scene is 1920x1080;
+// stretching it across a spanning window would double the petal width).
+Item {
+    id: root
 
     property int holdMs: 260      // full storm, before it starts breaking up
     property int dissolveMs: 1500
@@ -59,7 +54,7 @@ Window {
         anchors.fill: parent
         fragmentShader: Qt.resolvedUrl("shaders/petals.frag.qsb")
         property variant source: tex
-        property real progress: win.progress
+        property real progress: root.progress
         property real noiseScale: 7.0
         property real grain: 0.85
         // Sakura, not confetti: the petals that survive the dissolve are their
@@ -71,11 +66,11 @@ Window {
 
     SequentialAnimation {
         running: true
-        PauseAnimation { duration: win.holdMs }
+        PauseAnimation { duration: root.holdMs }
         NumberAnimation {
-            target: win; property: "progress"
+            target: root; property: "progress"
             from: 0; to: 1
-            duration: win.dissolveMs
+            duration: root.dissolveMs
             // Slow at first so the holes creep open, then quick at the end so
             // it clears rather than lingering as a haze.
             easing.type: Easing.InCubic
@@ -87,7 +82,7 @@ Window {
     // never driven, an always-on-top window that stays alive is far worse than
     // no reveal at all -- so quit regardless.
     Timer {
-        interval: win.holdMs + win.dissolveMs + 1500
+        interval: root.holdMs + root.dissolveMs + 1500
         running: true
         onTriggered: Qt.quit()
     }

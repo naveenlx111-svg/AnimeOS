@@ -103,11 +103,12 @@ def build_idle():
                  f'  tools/matte.py {PETAL_SHOT} --out /dev/null '
                  f'--no-core --open 2 --tag _idle')
 
-    # Both layers ping-pong over the same number of frames, which is what makes
-    # the loop seamless -- the last frame is the first frame's neighbour.
-    order = list(range(len(hold))) + list(range(len(hold) - 1, -1, -1))
-    porder = list(range(len(petal))) + list(range(len(petal) - 1, -1, -1))
-    n = min(len(order), len(porder))
+    # Forward-only with a two-frame crossfade at the wrap. The loop used to
+    # ping-pong (forward then reverse), which is seam-free but makes the petals
+    # visibly drift up and then back every pass. This hold is near-static
+    # (frame-to-frame diff ~0.02), so a forward loop with a short blend at the
+    # wrap reads as a calm continuous drift and never reverses.
+    n = min(len(hold), len(petal))
 
     tmp = ROOT / 'shots' / 'review' / '_idle'
     tmp.mkdir(parents=True, exist_ok=True)
@@ -115,14 +116,25 @@ def build_idle():
         f.unlink()
 
     lumas = []
+    comps = []
     for i in range(n):
-        bg = np.asarray(Image.open(hold[order[i]]).convert('RGB')).astype(np.float32)
-        pk = np.asarray(Image.open(petal[porder[i]]).convert('RGB')).astype(np.float32)
+        bg = np.asarray(Image.open(hold[i]).convert('RGB')).astype(np.float32)
+        pk = np.asarray(Image.open(petal[i]).convert('RGB')).astype(np.float32)
         w = pk.shape[1] // 2
         rgb, a = pk[:, :w], (pk[:, w:, :1] / 255.0) * PETAL_OPACITY
         # The matte is straight, not premultiplied, so composite the long way.
         comp = bg * (1.0 - a) + rgb * a
+        comps.append(comp)
         lumas.append(comp[300:660, 640:1280].mean())
+
+    # Two interpolated frames ease the wrap back to the first frame. The jump
+    # from last to first is tiny on this hold; the blends cut it below sight.
+    first = comps[0]
+    for k in (1, 2):
+        t = k / 3.0
+        comps.append(comps[-1] * (1.0 - t) + first * t)
+
+    for i, comp in enumerate(comps):
         Image.fromarray(comp.round().clip(0, 255).astype(np.uint8)).save(tmp / f'{i+1:04d}.png')
 
     out = OUT / 'idle_loop.mp4'
@@ -136,7 +148,7 @@ def build_idle():
     for f in tmp.glob('*.png'):
         f.unlink()
     tmp.rmdir()
-    print(f'  idle_loop.mp4 {n} frames, {n/FPS:.2f}s, '
+    print(f'  idle_loop.mp4 {len(comps)} frames, {len(comps)/FPS:.2f}s, '
           f'{out.stat().st_size/1e6:.1f} MB; panel-region luma '
           f'{np.mean(lumas):.1f} (was 11.0 bare)')
 

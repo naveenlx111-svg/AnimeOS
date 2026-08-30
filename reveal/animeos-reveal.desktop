@@ -2,7 +2,7 @@
 Type=Application
 Name=AnimeOS Senbonzakura reveal
 Comment=Plays the Senbonzakura clearing sweep once at session start
-Exec=/home/naveen/AnimeOS/reveal/run.sh
+Exec=/mnt/windows/Users/abhir/Documents/Projects/AnimeOS/reveal/run.sh
 Terminal=false
 X-GNOME-Autostart-enabled=true
 X-KDE-autostart-phase=2

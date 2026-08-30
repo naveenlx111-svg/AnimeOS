@@ -4,6 +4,12 @@ import QtQuick.Layouts
 
 // The login panel.
 //
+// No box. The panel used to be a gradient rectangle, which framed the field
+// like every other login screen does; the whole point of this one is that it
+// is not a form floating over the footage but a thing standing in it. So the
+// composition is bare -- a mark, a name, a hairline, a field that is nothing
+// but a line, and the Bankai as an underline rather than a button.
+//
 // SDDM injects `sddm`, `userModel`, `sessionModel` and `keyboard` as globals.
 // They are taken as properties here rather than referenced directly so the
 // theme can also run standalone under qmlscene with mocks -- otherwise the
@@ -26,7 +32,7 @@ FocusScope {
     signal authAccepted()
 
     implicitWidth: 460
-    implicitHeight: column.implicitHeight + 64
+    implicitHeight: column.implicitHeight + 48
 
     function submit() {
         if (busy || password.text.length === 0)
@@ -43,8 +49,8 @@ FocusScope {
 
     // If the host never answers -- which is exactly what happens under
     // --test-mode, where the greeter posts the login to a daemon socket with
-    // nothing listening on it -- the button would otherwise sit on its busy
-    // dash forever and the field would stay disabled, locking the user out of
+    // nothing listening on it -- the action would otherwise sit on its busy
+    // dots forever and the field would stay disabled, locking the user out of
     // their own login screen.
     //
     // The interval has to clear the delay PAM deliberately imposes on a WRONG
@@ -52,14 +58,10 @@ FocusScope {
     // flight and reports "no response" for something that is about to answer
     // "authentication failed" -- and the message visibly flips when the real
     // one lands. FAIL_DELAY is 3s on this machine, and pam_unix's own default
-    // is 2s, so four seconds left only a second of margin: one slow disk or
-    // one probing module and the wrong message wins the race.
-    //
-    // Ten is clear of that and still recovers a wedged button long before
-    // anyone would start hunting for a TTY. The wait is not a dead one -- the
-    // button runs its dots throughout -- so the cost of erring long is small,
-    // where the cost of erring short is telling someone their login service
-    // is broken when they simply mistyped.
+    // is 2s, so four seconds left only a second of margin. Ten is clear of
+    // that and still recovers a wedged button long before anyone would start
+    // hunting for a TTY; the wait is not a dead one, the button runs its dots
+    // throughout.
     Timer {
         id: stuck
         interval: 10000
@@ -87,149 +89,110 @@ FocusScope {
         password.forceActiveFocus()
     }
 
-    // ---------------------------------------------------------------- panel
-
-    Rectangle {
-        id: panel
-        anchors.fill: parent
-        radius: Theme.radius
-        border.width: 1
-        // Blade, not petal. The panel has to keep its shape while a full-frame
-        // magenta wash passes behind it, and a pink edge disappears into that.
-        border.color: Qt.rgba(Theme.rim.r, Theme.rim.g, Theme.rim.b,
-                              root.busy ? 0.75 : 0.34)
-        Behavior on border.color { ColorAnimation { duration: Theme.normal } }
-
-        // Denser at the bottom, so the panel sits into the dark rather than
-        // floating on it.
-        gradient: Gradient {
-            GradientStop { position: 0.0
-                color: Qt.rgba(Theme.panel.r, Theme.panel.g, Theme.panel.b, 0.80) }
-            GradientStop { position: 1.0
-                color: Qt.rgba(Theme.abyss.r, Theme.abyss.g, Theme.abyss.b, 0.90) }
-        }
-
-        // A single soft inner edge rather than a drop shadow: it matches the
-        // way the blades in the footage read, which is all rim and no body.
-        Rectangle {
-            anchors.fill: parent
-            anchors.margins: 1
-            radius: parent.radius - 1
-            color: "transparent"
-            border.width: 1
-            border.color: Qt.rgba(Theme.blade.r, Theme.blade.g, Theme.blade.b, 0.08)
-        }
-
-        // The lit top edge every blade in the sequence has.
-        Rectangle {
-            anchors { left: parent.left; right: parent.right; top: parent.top }
-            anchors.margins: Theme.radius
-            height: 1
-            color: Qt.rgba(Theme.blade.r, Theme.blade.g, Theme.blade.b, 0.22)
-        }
-    }
-
     SequentialAnimation {
         id: shake
-        NumberAnimation { target: root; property: "anchors.horizontalCenterOffset"; to: -9; duration: 45 }
-        NumberAnimation { target: root; property: "anchors.horizontalCenterOffset"; to:  9; duration: 90 }
+        NumberAnimation { target: root; property: "anchors.horizontalCenterOffset"; to: -7; duration: 45 }
+        NumberAnimation { target: root; property: "anchors.horizontalCenterOffset"; to:  7; duration: 90 }
         NumberAnimation { target: root; property: "anchors.horizontalCenterOffset"; to:  0; duration: 45 }
     }
 
-    // Spacing is set per item rather than by one uniform gap, so the panel
-    // reads as three groups -- who you are, where you type, what happened --
-    // instead of an evenly spaced list of six unrelated things.
     ColumnLayout {
         id: column
         anchors.centerIn: parent
-        width: parent.width - 72
         spacing: 0
 
-        // ------------------------------------------------------- identity
+        // ------------------------------------------------------------ mark
 
-        // This replaces the initial-in-a-circle that used to sit here. That
-        // circle repeated the username directly under it and said nothing
-        // else, and stacking it above the mark would have pushed the field
-        // off the panel's centre. On a machine with one account an avatar is
-        // decoration either way, so it may as well be the right decoration.
         ByakuyaMark {
             Layout.alignment: Qt.AlignHCenter
-            Layout.preferredWidth: 112
-            Layout.preferredHeight: 129
+            Layout.preferredWidth: 92
+            Layout.preferredHeight: 106
             opacity: root.busy ? 0.55 : 1.0
             Behavior on opacity { NumberAnimation { duration: Theme.normal } }
         }
 
+        // ------------------------------------------------------------ name
+
         RowLayout {
             Layout.alignment: Qt.AlignHCenter
-            Layout.topMargin: 4
-            spacing: 8
+            Layout.topMargin: 14
+            spacing: 10
 
             GlyphButton {
                 visible: root.users && root.users.count > 1
-                implicitWidth: 26; implicitHeight: 26
+                implicitWidth: 24; implicitHeight: 24
                 kind: "prev"
                 tooltip: ""
                 onClicked: root.selectUser(root.userIndex - 1)
             }
 
             Text {
-                text: root.userName
+                text: root.userName.toUpperCase()
                 color: Theme.petalLight
-                font.pixelSize: 25
-                font.letterSpacing: 1.4
+                font.pixelSize: 15
+                font.letterSpacing: 5
                 horizontalAlignment: Text.AlignHCenter
             }
 
             GlyphButton {
                 visible: root.users && root.users.count > 1
-                implicitWidth: 26; implicitHeight: 26
+                implicitWidth: 24; implicitHeight: 24
                 kind: "next"
                 tooltip: ""
                 onClicked: root.selectUser(root.userIndex + 1)
             }
         }
 
-        Text {
-            Layout.fillWidth: true
-            Layout.topMargin: 4
-            horizontalAlignment: Text.AlignHCenter
-            text: "SENBONZAKURA KAGEYOSHI"
-            color: Theme.muted
-            font.pixelSize: 11
-            font.letterSpacing: 2.6
-            opacity: 0.6
+        // ------------------------------------------------------- hairline
+
+        // A blade edge, not a divider: one faint horizontal stroke that tells
+        // the eye where the field begins before the field itself is focused.
+        Rectangle {
+            Layout.alignment: Qt.AlignHCenter
+            Layout.topMargin: 22
+            width: 210
+            height: 1
+            color: Qt.rgba(Theme.rim.r, Theme.rim.g, Theme.rim.b, 0.28)
         }
 
         // ------------------------------------------------------- password
 
         TextField {
             id: password
-            Layout.fillWidth: true
-            Layout.topMargin: 22
-            Layout.preferredHeight: 46
+            Layout.alignment: Qt.AlignHCenter
+            Layout.topMargin: 16
+            Layout.preferredWidth: 320
+            Layout.preferredHeight: 36
             focus: true
             echoMode: TextInput.Password
             passwordCharacter: "\u2022"
             placeholderText: "password"
-            placeholderTextColor: Qt.rgba(Theme.muted.r, Theme.muted.g, Theme.muted.b, 0.45)
+            placeholderTextColor: Qt.rgba(Theme.muted.r, Theme.muted.g, Theme.muted.b, 0.4)
             color: Theme.petalLight
             font.pixelSize: 16
+            font.letterSpacing: 1
             selectionColor: Theme.glow
             selectedTextColor: Theme.night
             enabled: !root.busy
             horizontalAlignment: TextInput.AlignHCenter
 
+            // The field is just a line. At rest it is a cool blade edge, quiet
+            // enough to sit over the petals; focused it becomes the one petal
+            // accent on the screen and grows out from the middle.
             background: Rectangle {
-                radius: 9
-                color: Qt.rgba(Theme.abyss.r, Theme.abyss.g, Theme.abyss.b, 0.62)
-                border.width: 1
-                // Resting state is blade; focus is the one moment the petal
-                // colour is worth spending, because it marks where to type.
-                border.color: password.activeFocus
-                              ? Theme.glow
-                              : Qt.rgba(Theme.rim.r, Theme.rim.g, Theme.rim.b, 0.26)
-                Behavior on border.color { ColorAnimation { duration: Theme.fast } }
+                color: "transparent"
+                Rectangle {
+                    anchors.bottom: parent.bottom
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    width: password.activeFocus ? parent.width : parent.width * 0.55
+                    height: 2
+                    radius: 1
+                    color: password.activeFocus
+                           ? Theme.glow
+                           : Qt.rgba(Theme.rim.r, Theme.rim.g, Theme.rim.b, 0.30)
+                    Behavior on width { NumberAnimation { duration: Theme.normal } }
+                    Behavior on color { ColorAnimation { duration: Theme.fast } }
+                }
             }
 
             Keys.onReturnPressed: root.submit()
@@ -237,18 +200,15 @@ FocusScope {
         }
 
         // Caps lock keeps its height whether or not it is showing. It used to
-        // appear and disappear inside a layout, which moved the button under
+        // appear and disappear inside a layout, which moved the action under
         // the cursor at the exact moment someone was reaching for it.
         Text {
             Layout.fillWidth: true
-            Layout.topMargin: 7
+            Layout.topMargin: 8
             Layout.preferredHeight: 13
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
             text: "caps lock is on"
-            // Advisory, not an accent and not a failure: warm enough to catch
-            // the eye without claiming the petal colour, which on this panel
-            // means "this is the thing to act on".
             color: Theme.petalLight
             font.pixelSize: 11
             font.letterSpacing: 1.4
@@ -256,32 +216,46 @@ FocusScope {
             Behavior on opacity { NumberAnimation { duration: Theme.fast } }
         }
 
+        // ----------------------------------------------------------- bankai
+
         Button {
             id: go
-            Layout.fillWidth: true
-            Layout.topMargin: 7
+            Layout.alignment: Qt.AlignHCenter
+            Layout.topMargin: 18
+            Layout.preferredWidth: 170
             Layout.preferredHeight: 44
             enabled: !root.busy && password.text.length > 0
 
-            // Busy is three dots running, not a dash. A dash reads as an
-            // em-rule someone left in the string, and the button also has to
-            // stop looking disabled while it waits -- it is working, and the
-            // disabled treatment says the opposite.
+            // An action, not a button: letter-spaced type with an underline
+            // that only shows when it is worth reaching for. Busy is the same
+            // three dots as before, running under where the word was.
             contentItem: Item {
                 Text {
+                    id: goText
                     anchors.centerIn: parent
                     text: "BANKAI"
                     color: go.enabled ? Theme.petalLight : Theme.muted
-                    font.pixelSize: 15
+                    font.pixelSize: 14
                     font.bold: true
-                    font.letterSpacing: 4.5
-                    opacity: root.busy ? 0 : (go.enabled ? 1.0 : 0.4)
+                    font.letterSpacing: 6
+                    opacity: root.busy ? 0 : (go.enabled ? 1 : 0.45)
+                    Behavior on opacity { NumberAnimation { duration: Theme.fast } }
+                }
+
+                Rectangle {
+                    anchors.horizontalCenter: goText.horizontalCenter
+                    anchors.top: goText.bottom
+                    anchors.topMargin: 7
+                    width: goText.width
+                    height: 1
+                    color: Qt.rgba(Theme.glow.r, Theme.glow.g, Theme.glow.b, 0.85)
+                    opacity: (go.hovered || go.activeFocus) && go.enabled ? 0.9 : 0
                     Behavior on opacity { NumberAnimation { duration: Theme.fast } }
                 }
 
                 Row {
                     anchors.centerIn: parent
-                    spacing: 7
+                    spacing: 6
                     opacity: root.busy ? 1 : 0
                     Behavior on opacity { NumberAnimation { duration: Theme.fast } }
 
@@ -289,44 +263,32 @@ FocusScope {
                         model: 3
                         Rectangle {
                             required property int index
-                            width: 5; height: 5; radius: 2.5
+                            width: 4; height: 4; radius: 2
                             color: Theme.petalLight
                             opacity: 0.25
                             SequentialAnimation on opacity {
                                 running: root.busy
                                 loops: Animation.Infinite
-                                PauseAnimation { duration: index * 170 }
-                                NumberAnimation { to: 1.0; duration: 230 }
-                                NumberAnimation { to: 0.25; duration: 230 }
-                                PauseAnimation { duration: (2 - index) * 170 }
+                                PauseAnimation { duration: index * 150 }
+                                NumberAnimation { to: 1.0; duration: 220 }
+                                NumberAnimation { to: 0.25; duration: 220 }
+                                PauseAnimation { duration: (2 - index) * 150 }
                             }
                         }
                     }
                 }
             }
 
-            background: Rectangle {
-                radius: 9
-                color: go.pressed ? Theme.deep
-                     : (go.hovered || root.busy)
-                       ? Qt.rgba(Theme.glow.r, Theme.glow.g, Theme.glow.b, 0.34)
-                       : Qt.rgba(Theme.glow.r, Theme.glow.g, Theme.glow.b, 0.16)
-                border.width: 1
-                border.color: Qt.rgba(Theme.glow.r, Theme.glow.g, Theme.glow.b,
-                                      (go.enabled || root.busy) ? 0.75 : 0.18)
-                Behavior on color { ColorAnimation { duration: Theme.fast } }
-                Behavior on border.color { ColorAnimation { duration: Theme.fast } }
-            }
-
+            background: Rectangle { color: "transparent" }
             onClicked: root.submit()
         }
 
-        // Two lines held open. A failure message that grows the panel moves
-        // the field it is about, which is the wrong thing to do to someone
-        // who has just been told to type it again.
+        // Two lines held open. A failure message that grows the composition
+        // moves the field it is about, which is the wrong thing to do to
+        // someone who has just been told to type it again.
         Text {
             Layout.fillWidth: true
-            Layout.topMargin: 9
+            Layout.topMargin: 8
             Layout.preferredHeight: 30
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignTop
