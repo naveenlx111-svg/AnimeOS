@@ -147,6 +147,11 @@ screens, exits clean (status 0), no warnings (fixed the `qmlEngine()`-vs-
   The reveal unit starts with the compositor (`After=plasma-kwin_wayland.service`,
   no ordering relative to the shell) so the one-loop play lands over the home
   screen.
+- **Smooth ending.** Stopping the video and dissolving a static frame read as
+  an abrupt freeze. The reveal now keeps the storm looping *through* the
+  dissolve (a timer starts the handoff after one play, not `EndOfMedia`), so
+  the petals are still moving as they scatter; the dissolve is eased
+  `InOutCubic` over 2s with a short settle pause before the window closes.
 
 ### Git housekeeping
 

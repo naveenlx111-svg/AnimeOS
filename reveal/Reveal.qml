@@ -19,7 +19,8 @@ import QtMultimedia
 Item {
     id: root
 
-    property int dissolveMs: 1500
+    property int holdMs: 1750      // one full play of the storm before it clears
+    property int dissolveMs: 2000  // a slow scatter-away, not a snap
     property real progress: 0
 
     // The video carries colour and matte side by side. It is fed through a
@@ -29,14 +30,12 @@ Item {
         id: player
         source: Qt.resolvedUrl("assets/petals.mp4")
         videoOutput: sink
-        // Play the storm exactly once, then clear it. Looping is what made the
-        // reveal read as an odd repeated sequence.
-        loops: 1
+        // Keep looping through the dissolve. Stopping the video and dissolving
+        // a static frame is what read as the abrupt end -- a frozen petal
+        // field fading out. With the storm still moving, the clear reads as
+        // the petals scattering away.
+        loops: MediaPlayer.Infinite
         Component.onCompleted: play()
-        onMediaStatusChanged: {
-            if (mediaStatus === MediaPlayer.EndOfMedia && !handoff.running)
-                handoff.running = true
-        }
     }
 
     VideoOutput {
@@ -69,9 +68,20 @@ Item {
         blending: true
     }
 
-    // Handoff: once the storm has played through once, clear it. Slow at first
-    // so the holes creep open, then quick at the end so it clears rather than
-    // lingering as a haze.
+    // Start clearing after the storm has played through once. A timer rather
+    // than EndOfMedia so the video can keep looping underneath the dissolve.
+    Timer {
+        interval: root.holdMs
+        running: true
+        onTriggered: {
+            if (!handoff.running)
+                handoff.running = true
+        }
+    }
+
+    // The handoff: per-petal dissolve over the still-moving storm, eased in
+    // and out so it neither jumps in nor snaps at the end. A short pause after
+    // everything is clear lets the desktop settle before the window goes.
     SequentialAnimation {
         id: handoff
         running: false
@@ -79,16 +89,16 @@ Item {
             target: root; property: "progress"
             from: 0; to: 1
             duration: root.dissolveMs
-            easing.type: Easing.InCubic
+            easing.type: Easing.InOutCubic
         }
+        PauseAnimation { duration: 400 }
         ScriptAction { script: Qt.quit() }
     }
 
-    // A hard backstop. If the media never loads or never reports EndOfMedia, an
-    // always-on-top window that stays alive is far worse than no reveal at all
-    // -- so quit regardless.
+    // A hard backstop. If the media never loads, an always-on-top window that
+    // stays alive is far worse than no reveal at all -- so quit regardless.
     Timer {
-        interval: 5000
+        interval: 6000
         running: true
         onTriggered: Qt.quit()
     }
