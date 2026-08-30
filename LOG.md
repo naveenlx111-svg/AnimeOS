@@ -129,19 +129,24 @@ Verified in-session: the service runs the reveal, petals render on both
 screens, exits clean (status 0), no warnings (fixed the `qmlEngine()`-vs-
 `view->engine()` quit wiring).
 
-### Blank-screen handoff + login legibility — done
+### Blank-screen handoff + login legibility — done, then trimmed
 
-- **The greeter now hands off to petals, not black.** The post-auth screen was
-  a black rectangle, so between the password and the session's reveal there was
-  a blank gap while the session booted. `Main.qml` now fades the panel out and
-  the packed petal storm in (petals.mp4 + the reveal's shader, copied into the
-  theme), so SDDM tears the greeter down into petals and the session's reveal
-  picks up where it left off. There is still a short compositor handoff after
-  the greeter is killed; the reveal unit now also orders `Before=
-  plasma-plasmashell.service` so the petals appear while the desktop loads.
+- **The greeter now hands off cleanly.** A first attempt made the greeter show
+  the petal storm after the password to bridge the handoff; it did not help
+  (SDDM tears the greeter down too fast for it to render) and it could read as
+  an odd looped sequence, so it was reverted to the one-frame handoff. The
+  brief blank between the password and the session's reveal is inherent (SDDM
+  kills the greeter before the session's compositor exists; nothing user-space
+  can render there) and is the accepted behavior.
 - **Login UI legibility.** Dropped the ByakuyaMark avatar above the name; added
   a soft vertical scrim behind the text so the name, the line field and BANKAI
   stay legible when the sequence behind them is bright.
+- **Reveal plays the storm exactly once.** The petals video is 1.75s; a long
+  hold made it visibly loop. `Reveal.qml` now sets `loops: 1` and dissolves on
+  `EndOfMedia` (~1.5s), so the petals play once over the desktop then clear.
+  The reveal unit starts with the compositor (`After=plasma-kwin_wayland.service`,
+  no ordering relative to the shell) so the one-loop play lands over the home
+  screen.
 
 ### Git housekeeping
 

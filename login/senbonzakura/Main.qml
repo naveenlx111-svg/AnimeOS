@@ -1,6 +1,5 @@
 import QtQuick
 import QtQuick.Controls
-import QtMultimedia
 
 // AnimeOS - Senbonzakura greeter.
 //
@@ -164,60 +163,16 @@ Rectangle {
         }
     }
 
-    // The way out is the same storm the session will pick up. The moment the
-    // password is accepted the panel fades away and the petal storm fades in
-    // over everything; SDDM tears the greeter down around then, and the
-    // session's reveal starts where this leaves off -- so the handoff is
-    // petals to petals rather than petals to a black screen while the session
-    // boots.
-    Item {
-        id: petalsLayer
+    // The way in is a fade; the way out is not. The moment the password is
+    // accepted this goes opaque in one frame, so the greeter is simply gone
+    // rather than bowing out over half a second -- the session is already
+    // starting behind it, and a send-off there is just a delay in costume.
+    // SDDM tears the greeter down around now; the session's reveal picks the
+    // petal storm up over the desktop.
+    Rectangle {
         anchors.fill: parent
-        opacity: root.authenticated ? 1 : 0
-        visible: opacity > 0
-        Behavior on opacity { NumberAnimation { duration: Theme.normal } }
-
-        MediaPlayer {
-            id: petalsPlayer
-            source: "assets/video/petals.mp4"
-            videoOutput: petalsSink
-            loops: MediaPlayer.Infinite
-        }
-
-        VideoOutput {
-            id: petalsSink
-            anchors.fill: parent
-            visible: false
-            fillMode: VideoOutput.Stretch
-        }
-
-        ShaderEffectSource {
-            id: petalsTex
-            sourceItem: petalsSink
-            anchors.fill: parent
-            visible: false
-            live: true
-            hideSource: true
-        }
-
-        ShaderEffect {
-            anchors.fill: parent
-            fragmentShader: "shaders/petals.frag.qsb"
-            property variant source: petalsTex
-            property real progress: 0
-            property real noiseScale: 7.0
-            property real grain: 0.85
-            // Sakura, not confetti: the petals that survive are their
-            // white-hot cores, so push them back toward blossom pink.
-            property real tintAmount: 0.85
-            property vector4d tint: Qt.vector4d(1.0, 0.62, 0.82, 1.0)
-            blending: true
-        }
-    }
-
-    onAuthenticatedChanged: {
-        if (root.authenticated)
-            petalsPlayer.play()
+        color: "black"
+        visible: root.authenticated
     }
 
     Connections {

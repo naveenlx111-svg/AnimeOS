@@ -19,7 +19,6 @@ import QtMultimedia
 Item {
     id: root
 
-    property int holdMs: 2600      // storm held while the desktop comes up
     property int dissolveMs: 1500
     property real progress: 0
 
@@ -30,8 +29,14 @@ Item {
         id: player
         source: Qt.resolvedUrl("assets/petals.mp4")
         videoOutput: sink
-        loops: MediaPlayer.Infinite
+        // Play the storm exactly once, then clear it. Looping is what made the
+        // reveal read as an odd repeated sequence.
+        loops: 1
         Component.onCompleted: play()
+        onMediaStatusChanged: {
+            if (mediaStatus === MediaPlayer.EndOfMedia && !handoff.running)
+                handoff.running = true
+        }
     }
 
     VideoOutput {
@@ -64,25 +69,26 @@ Item {
         blending: true
     }
 
+    // Handoff: once the storm has played through once, clear it. Slow at first
+    // so the holes creep open, then quick at the end so it clears rather than
+    // lingering as a haze.
     SequentialAnimation {
-        running: true
-        PauseAnimation { duration: root.holdMs }
+        id: handoff
+        running: false
         NumberAnimation {
             target: root; property: "progress"
             from: 0; to: 1
             duration: root.dissolveMs
-            // Slow at first so the holes creep open, then quick at the end so
-            // it clears rather than lingering as a haze.
             easing.type: Easing.InCubic
         }
         ScriptAction { script: Qt.quit() }
     }
 
-    // A hard backstop. If the media never loads, or the animation is somehow
-    // never driven, an always-on-top window that stays alive is far worse than
-    // no reveal at all -- so quit regardless.
+    // A hard backstop. If the media never loads or never reports EndOfMedia, an
+    // always-on-top window that stays alive is far worse than no reveal at all
+    // -- so quit regardless.
     Timer {
-        interval: root.holdMs + root.dissolveMs + 1500
+        interval: 5000
         running: true
         onTriggered: Qt.quit()
     }

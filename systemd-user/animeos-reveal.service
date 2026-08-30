@@ -2,16 +2,11 @@
 Description=AnimeOS Senbonzakura reveal
 PartOf=graphical-session.target
 After=plasma-kwin_wayland.service
-# Start before the desktop shell so the petals appear while the desktop loads,
-# not after it.
-Before=plasma-plasmashell.service
 
 [Service]
 Type=oneshot
-# %h is the user's home, so this unit is correct on any account rather than
-# only on the machine it was written on. Install the binary here, or edit
-# the path if you keep it elsewhere (see LOG.md).
-ExecStart=%h/.local/share/animeos/reveal/reveal
+# Adjust to wherever the reveal is installed (see LOG.md)
+ExecStart=/home/abhi/.local/share/animeos/reveal/reveal
 TimeoutSec=20
 
 [Install]
