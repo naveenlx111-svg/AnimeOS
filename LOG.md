@@ -129,6 +129,20 @@ Verified in-session: the service runs the reveal, petals render on both
 screens, exits clean (status 0), no warnings (fixed the `qmlEngine()`-vs-
 `view->engine()` quit wiring).
 
+### Blank-screen handoff + login legibility — done
+
+- **The greeter now hands off to petals, not black.** The post-auth screen was
+  a black rectangle, so between the password and the session's reveal there was
+  a blank gap while the session booted. `Main.qml` now fades the panel out and
+  the packed petal storm in (petals.mp4 + the reveal's shader, copied into the
+  theme), so SDDM tears the greeter down into petals and the session's reveal
+  picks up where it left off. There is still a short compositor handoff after
+  the greeter is killed; the reveal unit now also orders `Before=
+  plasma-plasmashell.service` so the petals appear while the desktop loads.
+- **Login UI legibility.** Dropped the ByakuyaMark avatar above the name; added
+  a soft vertical scrim behind the text so the name, the line field and BANKAI
+  stay legible when the sequence behind them is bright.
+
 ### Git housekeeping
 
 - Pulled origin/main (2 new commits: PLAN.md sync, Login.qml stuck-timer

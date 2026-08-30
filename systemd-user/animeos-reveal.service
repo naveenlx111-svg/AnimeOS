@@ -2,6 +2,9 @@
 Description=AnimeOS Senbonzakura reveal
 PartOf=graphical-session.target
 After=plasma-kwin_wayland.service
+# Start before the desktop shell so the petals appear while the desktop loads,
+# not after it.
+Before=plasma-plasmashell.service
 
 [Service]
 Type=oneshot
