@@ -4,11 +4,11 @@ import QtQuick.Layouts
 
 // The login panel.
 //
-// No box. The panel used to be a gradient rectangle, which framed the field
-// like every other login screen does; the whole point of this one is that it
-// is not a form floating over the footage but a thing standing in it. So the
-// composition is bare -- a mark, a name, a hairline, a field that is nothing
-// but a line, and the Bankai as an underline rather than a button.
+// No box, but it does not float unguarded over the footage either -- a soft
+// vertical scrim darkens the band the panel sits on, so the name, the line
+// field and BANKAI stay legible when the sequence behind them is bright. The
+// composition is bare: a name, a hairline, a field that is nothing but a
+// line, and the Bankai as an underline rather than a button.
 //
 // SDDM injects `sddm`, `userModel`, `sessionModel` and `keyboard` as globals.
 // They are taken as properties here rather than referenced directly so the
@@ -96,26 +96,34 @@ FocusScope {
         NumberAnimation { target: root; property: "anchors.horizontalCenterOffset"; to:  0; duration: 45 }
     }
 
+    // The scrim: a soft vertical band behind the panel, transparent at the
+    // edges and deepest behind the text. It is what keeps the name and the
+    // field legible while the sequence plays on -- not a box, just enough dark
+    // to sit on.
+    Rectangle {
+        id: scrim
+        anchors.centerIn: parent
+        width: 480
+        height: 230
+        radius: 26
+        gradient: Gradient {
+            GradientStop { position: 0.0; color: Qt.rgba(0, 0, 0, 0) }
+            GradientStop { position: 0.5;
+                color: Qt.rgba(Theme.abyss.r, Theme.abyss.g, Theme.abyss.b, 0.55) }
+            GradientStop { position: 1.0; color: Qt.rgba(0, 0, 0, 0) }
+        }
+    }
+
     ColumnLayout {
         id: column
         anchors.centerIn: parent
         spacing: 0
 
-        // ------------------------------------------------------------ mark
-
-        ByakuyaMark {
-            Layout.alignment: Qt.AlignHCenter
-            Layout.preferredWidth: 92
-            Layout.preferredHeight: 106
-            opacity: root.busy ? 0.55 : 1.0
-            Behavior on opacity { NumberAnimation { duration: Theme.normal } }
-        }
-
         // ------------------------------------------------------------ name
 
         RowLayout {
             Layout.alignment: Qt.AlignHCenter
-            Layout.topMargin: 14
+            Layout.topMargin: 4
             spacing: 10
 
             GlyphButton {
