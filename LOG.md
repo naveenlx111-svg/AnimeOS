@@ -152,6 +152,11 @@ screens, exits clean (status 0), no warnings (fixed the `qmlEngine()`-vs-
   dissolve (a timer starts the handoff after one play, not `EndOfMedia`), so
   the petals are still moving as they scatter; the dissolve is eased
   `InOutCubic` over 2s with a short settle pause before the window closes.
+- **Seamless petal loop.** The 1.75s `petals.mp4` had a visible seam at its
+  loop point (wrap jump 0.128, 1.5x the mean motion) that read as a tiny
+  restart. Rebuilt it with a two-frame crossfade at the wrap (same technique as
+  the idle loop): the wrap jump is now 0.0003. The reveal plays the storm once
+  (~2.0s) with no loop seam.
 
 ### Git housekeeping
 

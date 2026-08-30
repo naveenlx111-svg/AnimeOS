@@ -19,7 +19,7 @@ import QtMultimedia
 Item {
     id: root
 
-    property int holdMs: 1750      // one full play of the storm before it clears
+    property int holdMs: 1950      // one full play of the storm before it clears
     property int dissolveMs: 2000  // a slow scatter-away, not a snap
     property real progress: 0
 
