@@ -5,8 +5,10 @@ After=plasma-kwin_wayland.service
 
 [Service]
 Type=oneshot
-# Adjust to wherever the reveal is installed (see LOG.md)
-ExecStart=/home/abhi/.local/share/animeos/reveal/reveal
+# %h is the user's home, so this unit is correct on any account rather than
+# only on the machine it was written on. Install the binary here, or edit
+# the path if you keep it elsewhere (see LOG.md).
+ExecStart=%h/.local/share/animeos/reveal/reveal
 TimeoutSec=20
 
 [Install]
