@@ -19,8 +19,8 @@ import QtMultimedia
 Item {
     id: root
 
-    property int holdMs: 1950      // one full play of the storm before it clears
-    property int dissolveMs: 2000  // a slow scatter-away, not a snap
+    property int holdMs: 1300      // storm plays (crescendo + settle) before clearing
+    property int dissolveMs: 1600  // a slow scatter-away, not a snap
     property real progress: 0
 
     // The video carries colour and matte side by side. It is fed through a
@@ -30,11 +30,12 @@ Item {
         id: player
         source: Qt.resolvedUrl("assets/petals.mp4")
         videoOutput: sink
-        // Keep looping through the dissolve. Stopping the video and dissolving
-        // a static frame is what read as the abrupt end -- a frozen petal
-        // field fading out. With the storm still moving, the clear reads as
-        // the petals scattering away.
-        loops: MediaPlayer.Infinite
+        // Play the storm exactly once. The source is not a stationary loop: it
+        // crescendos to a dense peak and then settles, so looping it re-starts
+        // that crescendo -- a visible "the storm is loading again" blip right
+        // before the dissolve. Playing it once ends on the dim, sparse settle
+        // frame, which the dissolve then clears.
+        loops: 1
         Component.onCompleted: play()
     }
 
@@ -68,8 +69,9 @@ Item {
         blending: true
     }
 
-    // Start clearing after the storm has played through once. A timer rather
-    // than EndOfMedia so the video can keep looping underneath the dissolve.
+    // Start clearing while the storm is still moving (the video ends on a dim,
+    // mostly-empty frame ~450ms after this), so motion carries through the
+    // early dissolve and there is nothing left to freeze at the end.
     Timer {
         interval: root.holdMs
         running: true
@@ -79,9 +81,9 @@ Item {
         }
     }
 
-    // The handoff: per-petal dissolve over the still-moving storm, eased in
-    // and out so it neither jumps in nor snaps at the end. A short pause after
-    // everything is clear lets the desktop settle before the window goes.
+    // The handoff: per-petal dissolve, eased in and out so it neither jumps in
+    // nor snaps at the end. A short pause after everything is clear lets the
+    // desktop settle before the window goes.
     SequentialAnimation {
         id: handoff
         running: false

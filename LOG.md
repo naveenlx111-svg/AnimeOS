@@ -157,6 +157,18 @@ screens, exits clean (status 0), no warnings (fixed the `qmlEngine()`-vs-
   restart. Rebuilt it with a two-frame crossfade at the wrap (same technique as
   the idle loop): the wrap jump is now 0.0003. The reveal plays the storm once
   (~2.0s) with no loop seam.
+- **The real loop problem was the crescendo, not the seam.** A frame-by-frame
+  luminance profile of the storm video showed the real cause of the "0.1s of
+  the next loop": the clip is *not* a stationary loop. It crescendos from luma
+  52 to a dense 84 peak in its opening frames (the "swords loading") then
+  settles to ~39. Looping re-started that crescendo, and the crossfade seam
+  fix made it worse for a no-loop setup (the crossfade tail ends bright).
+  `Reveal.qml` now plays the video **exactly once** (`loops: 1`), starting the
+  dissolve at 1.3s so motion carries through the early dissolve, and the video
+  ends on its dim, sparse settle frame which the dissolve then clears. No loop
+  point is ever rendered, so the re-crescendo blip is gone. (Diagnosis method:
+  per-frame video analysis was more precise than screenshots, which are too
+  coarse to catch a ~0.1s transient.)
 
 ### Git housekeeping
 
