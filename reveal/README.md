@@ -32,16 +32,57 @@ Two details that matter:
 * What survives a rising cut-off is each petal's near-white hot core, so the
   storm would drift colourless exactly as it thins. The shader pushes what is
   left back toward blossom pink, harder the further the dissolve has gone.
-* The window is `WindowTransparentForInput`, and quits on a timer that fires
-  whether or not the media ever loaded. An always-on-top window that outlives
-  its animation is worse than having no animation.
+* The overlay takes no keyboard focus (`KeyboardInteractivityNone`) and never
+  swallows a click, and it quits on a hard 6s backstop in `main.cpp` that
+  fires whether or not the media ever loaded. An always-on-top window that
+  outlives its animation is worse than having no animation.
+
+## Build it first
+
+The reveal is a compiled launcher (`main.cpp`), not a plain QML file, because
+it opens one layer-shell overlay per screen -- a single spanning window would
+stretch the 1920x1080 petal scene across both monitors and double the petal
+width. It also has to be above everything at session start without waiting for
+the desktop shell to finish loading.
+
+    cmake -S reveal -B reveal/build -DCMAKE_BUILD_TYPE=Release
+    cmake --build reveal/build -j4          # produces reveal/reveal
+
+Needs `qt6-base`, `qt6-declarative`, `layer-shell-qt` and `cmake`.
+
+**The binary is gitignored, so a fresh clone has no reveal until you build
+it** -- and because the reveal is built to fail silently, nothing will tell
+you. It simply will not happen. This has already caught us once, on a machine
+that pulled the switch from `qml6` to the compiled launcher and quietly lost
+its reveal.
+
+To check it, run `reveal/reveal` directly: it should take about six seconds
+and exit 0. Note that `spectacle` cannot screenshot a layer-shell overlay, so
+a screenshot is not proof either way -- watch it, or time it.
 
 ## Install
 
+Either an autostart entry:
+
     cp animeos-reveal.desktop ~/.config/autostart/
 
-Delete that file to turn it off. `run.sh` fails silently on purpose: a broken
-decoration must never be able to hold up a login.
+...or the systemd user unit, which starts it right after KWin rather than
+after the desktop has loaded:
+
+    cp systemd-user/animeos-reveal.service ~/.config/systemd/user/
+    mkdir -p ~/.local/share/animeos/reveal
+    cp reveal/reveal reveal/Reveal.qml ~/.local/share/animeos/reveal/
+    cp -r reveal/assets reveal/shaders ~/.local/share/animeos/reveal/
+    systemctl --user enable animeos-reveal.service
+
+**Pick one.** With both installed the reveal runs twice. The unit's
+`ExecStart` uses `%h`, so it is correct on any account; the `.desktop` file
+cannot expand variables and holds whatever absolute path was last committed to
+it -- check it before copying.
+
+Remove the autostart file, or `systemctl --user disable animeos-reveal`, to
+turn it off. `run.sh` fails silently on purpose: a broken decoration must
+never be able to hold up a login.
 
 ## Rebuild the petals
 
