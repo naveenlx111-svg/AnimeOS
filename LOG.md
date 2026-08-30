@@ -87,19 +87,37 @@ modified, the issues hit, and how things are configured on this machine
   ```
 - **Source footage is not committed** (gitignored); the built videos are.
 
-### Next: petal splash (native login→desktop transition)
+### Petal splash (native login→desktop transition) — DONE
 
-The reveal-overlay approach leaves a 4-5s gap (KDE splash + desktop load
-before the autostart app shows petals). Plan: replace the Plasma splash
-(`KSplashQML`) with a custom look-and-feel package
-`~/.local/share/plasma/look-and-feel/animeos-splash.desktop/` whose
-`contents/splash/Splash.qml` plays the packed petal storm through the same
-per-petal dissolve shader and dissolves into the desktop when the session is
-ready (stage 5). Activated via `~/.config/ksplashrc`:
+Replaced the Plasma splash (`KSplashQML`) with a custom look-and-feel package
+`splash/` in the repo, installed to
+`~/.local/share/plasma/look-and-feel/animeos-splash.desktop/`. Activated via
+`~/.config/ksplashrc`:
 ```
 [KSplash]
 Engine=KSplashQML
 Theme=animeos-splash.desktop
 ```
-KSplashQML opens one layer-shell window per screen, so petals appear on all
-monitors. The reveal autostart is then removed.
+The splash plays the packed petal storm (same colour|matte video + shader as
+the reveal) on every screen (KSplashQML opens one transparent layer-shell
+window per screen), fades in when the first frame decodes, and at stage 5
+(ksmserver/session-ready) fades the black backdrop out and dissolves the
+petals, revealing the desktop through the storm. Stage 6 closes the window.
+The `~/.config/autostart/animeos-reveal.desktop` reveal overlay was removed —
+the splash now owns the transition, so the old reveal would just double the
+petals. The `reveal/` C++ tool stays for manual testing.
+
+- Tested in KSplashQML test mode (`ksplashqml --test --nofork
+  animeos-splash.desktop`), which advances stages on a 2s timer: captured the
+  storm over black, then the handoff revealing the desktop (screenshot luma
+  jumps from ~26 to ~69, matching the desktop).
+- Stage semantics learned from the plasma-workspace source: 1 initial,
+  2 kcminit, 3 wm, 4 startPlasma, 5 ksmserver (ready), 6 desktop (exit).
+- Splash `console.log` output is swallowed by KSplashQML (PlasmaQuick engine),
+  so verify with screenshots instead.
+
+### Git housekeeping
+
+- Pulled origin/main (2 new commits: PLAN.md sync, Login.qml stuck-timer
+  4000→10000). The Login.qml overlap was reconciled by keeping our rewrite and
+  adopting their 10s fix; rebased and pushed as `a858b62`.

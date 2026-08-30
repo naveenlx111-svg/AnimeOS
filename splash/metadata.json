@@ -1,0 +1,16 @@
+{
+    "KPackageStructure": "Plasma/LookAndFeel",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Email": "abhiramkondaguduru@gmail.com",
+                "Name": "AnimeOS"
+            }
+        ],
+        "Description": "AnimeOS Senbonzakura petal splash",
+        "Id": "animeos-splash.desktop",
+        "License": "MIT",
+        "Name": "AnimeOS Senbonzakura Splash",
+        "Version": "0.1"
+    }
+}
