@@ -6,6 +6,28 @@ modified, the issues hit, and how things are configured on this machine
 
 ## Session: 2026-08-30 — Login polish, desktop reveal, SDDM bring-up
 
+### Greeter audio at the login screen (2026-08-31)
+
+**Symptom:** the greeter's Bankai sequence plays silently at login (video
+fine, no sound); everything is audible after login.
+
+**Root cause — device permission, not code.** The SDDM greeter runs as the
+`sddm` user (uid 951) in its own session, which starts its own
+PipeWire/wireplumber. `/dev/snd/*` are `root:audio` (rw-rw----) with an ACL
+granting access only to `abhi` and the `audio` group; `sddm` is in no group
+that can open them (`groups=951(sddm)`). So the greeter session's wireplumber
+never creates a sink, QtMultimedia has nowhere to output, and the audio is
+silently dropped (QtMultimedia does not error, so nothing is logged). After
+login the user session has device access and sound works.
+
+**Fix:** grant the greeter's user access to the sound devices:
+```bash
+sudo usermod -aG audio sddm      # revert: sudo gpasswd -d sddm audio
+```
+At the next boot the greeter session's wireplumber should create a real sink
+and the sequence audio will play. Verify by checking the sddm session created
+a sink, and by listening at the login screen.
+
 ### What we changed
 
 - **Idle loop is now forward-only.** `idle_loop.mp4` used to ping-pong
