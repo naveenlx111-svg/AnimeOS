@@ -36,6 +36,15 @@ a -1.5 dBTP ceiling; the source peaks were already at -1.8 dBTP, so the gain
 comes with light limiting, LRA 2.4). Effective level at the login screen is
 now ~-14 LUFS.
 
+**Louder still + user-controllable.** The sequence audio is now ~-12 LUFS, and
+the greeter reads its volume from the theme config key `General/volume`
+(default 1.0 in `theme.conf`). SDDM's ThemeConfig merges a `theme.conf.user`
+file on top of `theme.conf`, so the user can adjust the login-screen volume
+without touching the theme: create `/usr/share/sddm/themes/senbonzakura/
+theme.conf.user` with `[General]\nvolume=0.8` (0.0-1.0, attenuation only --
+the source sets the ceiling). No reinstall needed for a `.user` change; it is
+read every boot.
+
 ### What we changed
 
 - **Idle loop is now forward-only.** `idle_loop.mp4` used to ping-pong

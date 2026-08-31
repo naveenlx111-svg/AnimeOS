@@ -76,11 +76,14 @@ Item {
         videoOutput: seqOut
         audioOutput: AudioOutput {
             id: seqAudio
-            // Full volume. The sequence audio is normalised to -14 LUFS and the
-            // greeter's sink is an unknown, so 0.6 used to land near -22 LUFS,
-            // which was genuinely faint on monitor speakers. At 1.0 it is
-            // clearly audible without being an announcement.
-            volume: 1.0
+            // User-adjustable: reads `volume` from the theme config (theme.conf
+            // or a theme.conf.user override SDDM merges on top). Absent under
+            // qmlscene or an old theme, it falls back to full volume. The
+            // sequence audio is normalised to ~-12 LUFS, so 1.0 is clearly
+            // audible; lower the value to quiet it.
+            volume: (typeof config !== "undefined" && config)
+                        ? Number(config["General/volume"] || 1.0)
+                        : 1.0
         }
         onMediaStatusChanged: {
             if (mediaStatus === MediaPlayer.EndOfMedia)
