@@ -76,12 +76,11 @@ Item {
         videoOutput: seqOut
         audioOutput: AudioOutput {
             id: seqAudio
-            // Not 1.0. This starts by itself the moment you sit down, before
-            // anyone has had the chance to reach for a volume key, and the
-            // mix is normalised to -18.6 LUFS. volume here is linear
-            // amplitude, so 0.6 is about -4.4 dB and lands the sequence near
-            // -23 LUFS: audible across a room, not an announcement.
-            volume: 0.6
+            // Full volume. The sequence audio is normalised to -14 LUFS and the
+            // greeter's sink is an unknown, so 0.6 used to land near -22 LUFS,
+            // which was genuinely faint on monitor speakers. At 1.0 it is
+            // clearly audible without being an announcement.
+            volume: 1.0
         }
         onMediaStatusChanged: {
             if (mediaStatus === MediaPlayer.EndOfMedia)

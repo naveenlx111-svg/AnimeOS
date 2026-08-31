@@ -28,6 +28,14 @@ At the next boot the greeter session's wireplumber should create a real sink
 and the sequence audio will play. Verify by checking the sddm session created
 a sink, and by listening at the login screen.
 
+**Still faint after that?** The sequence audio was normalised to -18.5 LUFS
+and the greeter played it at 0.6 volume, landing near -22 LUFS -- genuinely
+quiet on monitor speakers. Two changes: the greeter's `AudioOutput` volume is
+now 1.0, and the sequence audio was re-normalised to ~-14 LUFS (loudnorm with
+a -1.5 dBTP ceiling; the source peaks were already at -1.8 dBTP, so the gain
+comes with light limiting, LRA 2.4). Effective level at the login screen is
+now ~-14 LUFS.
+
 ### What we changed
 
 - **Idle loop is now forward-only.** `idle_loop.mp4` used to ping-pong
